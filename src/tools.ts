@@ -503,6 +503,11 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
     async (a) => {
       try {
+        // "email" is only implemented on the bulk endpoint, not the per-invoice action route.
+        if (a.action === "email") {
+          const res = (await client.bulk<Json[]>("invoices", "email", [a.id])).data;
+          return ok(Array.isArray(res) ? res[0] : res);
+        }
         return ok((await client.action("invoices", a.id, a.action)).data);
       } catch (e) {
         return fail(e);
@@ -734,7 +739,8 @@ export function registerTools(server: McpServer, cfg: Config): void {
     "in_task_action",
     {
       title: "Task lifecycle action",
-      description: "Apply an action to a task: archive, restore, delete, or invoice (turn tracked time into an invoice).",
+      description:
+        "Apply an action to a task: archive, restore, delete, or invoice (creates a draft invoice from the tracked time; the task must belong to a client).",
       inputSchema: {
         id: z.string(),
         action: z.enum(["archive", "restore", "delete", "invoice"]),
@@ -743,7 +749,33 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
     async (a) => {
       try {
-        return ok((await client.action("tasks", a.id, a.action)).data);
+        if (a.action === "invoice") {
+          const task = (await client.get<Json>("tasks", a.id)).data;
+          if (!task.client_id) {
+            return fail(new Error("Task has no client; assign it to a client before invoicing it."));
+          }
+          const secs = totalSeconds(parseTimeLog(task.time_log));
+          const hours = Math.round((secs / 3600) * 100) / 100;
+          const invoice = (
+            await client.create<Json>("invoices", {
+              client_id: task.client_id,
+              line_items: [
+                {
+                  type_id: "2", // task line item; task_id makes IN link task.invoice_id
+                  task_id: a.id,
+                  quantity: hours,
+                  cost: Number(task.rate) || 0,
+                  notes: task.description ?? "",
+                },
+              ],
+            })
+          ).data;
+          return ok(invoice);
+        }
+        // Tasks have no per-entity action route; archive/restore/delete go via bulk.
+        const res = (await client.bulk<Json[]>("tasks", a.action, [a.id])).data;
+        const updated = Array.isArray(res) ? res[0] : res;
+        return ok(updated ? enrichTask(updated as Json) : res);
       } catch (e) {
         return fail(e);
       }

@@ -126,9 +126,13 @@ export class InvoiceNinjaClient {
     return this.request("PUT", `/${entity}/${id}`, { body });
   }
 
-  /** Lifecycle action via ?action=archive|restore|delete (and entity-specific verbs). */
+  /**
+   * Per-entity action route: GET /<entity>/<id>/<action> (e.g. invoice
+   * mark_sent, mark_paid, cancel). Not available for every entity — tasks
+   * have no such route and must use bulk() for archive/restore/delete.
+   */
   action<T = unknown>(entity: string, id: string, action: string): Promise<{ data: T }> {
-    return this.request("PUT", `/${entity}/${id}`, { query: { action } });
+    return this.request("GET", `/${entity}/${id}/${action}`);
   }
 
   /** Bulk action endpoint, e.g. POST /invoices/bulk { action, ids: [...] }. */
