@@ -80,15 +80,23 @@ const listShape = {
   page: z.number().int().min(1).optional().describe("Page number for pagination."),
   filter: z.string().optional().describe("Free-text search across the entity's searchable columns."),
   sort: z.string().optional().describe("Sort directive, e.g. 'date|desc'."),
+  status: z
+    .enum(["active", "archived", "deleted", "all"])
+    .optional()
+    .describe("Record state (default 'active'). 'all' also returns archived and deleted records."),
 };
 
 function toListOpts(a: Json, extra?: ListOptions["extra"]): ListOptions {
+  const status = (a.status as string | undefined) ?? "active";
   return {
     perPage: a.per_page as number | undefined,
     page: a.page as number | undefined,
     filter: a.filter as string | undefined,
     sort: a.sort as string | undefined,
-    extra,
+    extra: {
+      ...extra,
+      status: status === "all" ? "active,archived,deleted" : status,
+    },
   };
 }
 
@@ -283,11 +291,11 @@ export function registerTools(server: McpServer, cfg: Config): void {
       try {
         const payable = await client.list<Json>("invoices", {
           perPage: cfg.maxPerPage,
-          extra: { payable: "true" },
+          extra: { payable: "true", status: "active" },
         });
         const overdue = await client.list<Json>("invoices", {
           perPage: cfg.maxPerPage,
-          extra: { overdue: "true" },
+          extra: { overdue: "true", status: "active" },
         });
         const sum = (rows: Json[]) =>
           rows.reduce((acc, r) => acc + (Number(r.balance) || 0), 0);
@@ -320,19 +328,19 @@ export function registerTools(server: McpServer, cfg: Config): void {
     {
       title: "List tasks (time entries)",
       description:
-        "List time-tracking tasks. Filter by client_id, project_id, or status (invoiced|uninvoiced). " +
+        "List time-tracking tasks. Filter by client_id, project_id, or client_status (invoiced|uninvoiced). " +
         "Each row includes decoded tracked time and whether it is currently running.",
       inputSchema: {
         ...listShape,
         client_id: z.string().optional(),
         project_id: z.string().optional(),
-        status: z.string().optional().describe("e.g. 'uninvoiced' or 'invoiced'."),
+        client_status: z.string().optional().describe("'invoiced' or 'uninvoiced' (comma-separable)."),
       },
       annotations: RO,
     },
     async (a) => {
       try {
-        const extra = { client_id: a.client_id, project_id: a.project_id, status: a.status };
+        const extra = { client_id: a.client_id, project_id: a.project_id, client_status: a.client_status };
         const r = await client.list<Json>("tasks", toListOpts(a, extra));
         const rows = project(r.data, [...TASK_FIELDS, "time_log"]).map((t) => enrichTask(t as Json));
         return ok({ count: rows.length, tasks: rows });
