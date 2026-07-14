@@ -140,6 +140,47 @@ export class InvoiceNinjaClient {
     return this.request("POST", `/${entity}/bulk`, { body: { action, ids } });
   }
 
+  /**
+   * Attach a document to an entity via PUT /<entity>/<id>/upload (multipart,
+   * Laravel method spoofing: POST + _method=PUT). Reads the file from the
+   * local filesystem, so only meaningful where the server runs beside it.
+   */
+  async uploadDocument<T = unknown>(
+    entity: string,
+    id: string,
+    filePath: string,
+    fileName?: string,
+  ): Promise<{ data: T }> {
+    const { readFile } = await import("node:fs/promises");
+    const { basename } = await import("node:path");
+    const buf = await readFile(filePath);
+    const form = new FormData();
+    form.append("_method", "PUT");
+    form.append("documents[]", new Blob([new Uint8Array(buf)]), fileName ?? basename(filePath));
+    const url = new URL(`${this.api}/${entity}/${id}/upload`);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-API-TOKEN": this.cfg.token,
+        "X-Requested-With": "XMLHttpRequest",
+        ...(this.cfg.secret ? { "X-Api-Secret": this.cfg.secret } : {}),
+      },
+      body: form,
+      signal: AbortSignal.timeout(this.cfg.timeoutMs),
+    });
+    const text = await res.text();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+    if (!res.ok) {
+      throw new InvoiceNinjaError(`Upload to ${entity}/${id} failed (${res.status})`, res.status, parsed);
+    }
+    return parsed as { data: T };
+  }
+
   /** Health probe — hits a cheap, always-present route. */
   async ping(): Promise<{ ok: boolean; sampleCount: number }> {
     const res = await this.list("clients", { perPage: 1 });

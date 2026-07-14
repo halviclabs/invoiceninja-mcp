@@ -54,7 +54,12 @@ const INVOICE_FIELDS = [
 const QUOTE_FIELDS = ["id", "number", "client_id", "status_id", "amount", "date", "valid_until"];
 const PAYMENT_FIELDS = ["id", "number", "client_id", "amount", "applied", "date", "type_id"];
 const PRODUCT_FIELDS = ["id", "product_key", "notes", "price", "cost", "quantity"];
-const EXPENSE_FIELDS = ["id", "number", "vendor_id", "client_id", "amount", "date", "category_id"];
+const EXPENSE_FIELDS = [
+  "id", "number", "vendor_id", "client_id", "amount", "date", "category_id",
+  "currency_id", "transaction_reference",
+];
+const VENDOR_FIELDS = ["id", "name", "number", "currency_id", "is_deleted"];
+const EXPCAT_FIELDS = ["id", "name", "color", "is_deleted"];
 const TASK_FIELDS = [
   "id", "number", "description", "client_id", "project_id", "status_id",
   "rate", "invoice_id", "is_deleted",
@@ -268,6 +273,32 @@ export function registerTools(server: McpServer, cfg: Config): void {
       try {
         const r = await client.list<Json>("expenses", toListOpts(a));
         return ok({ count: r.data.length, expenses: project(r.data, EXPENSE_FIELDS) });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "in_list_vendors",
+    { title: "List vendors", description: "List vendors (expense counterparties) with optional search.", inputSchema: listShape, annotations: RO },
+    async (a) => {
+      try {
+        const r = await client.list<Json>("vendors", toListOpts(a));
+        return ok({ count: r.data.length, vendors: project(r.data, VENDOR_FIELDS) });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "in_list_expense_categories",
+    { title: "List expense categories", description: "List expense categories.", inputSchema: listShape, annotations: RO },
+    async (a) => {
+      try {
+        const r = await client.list<Json>("expense_categories", toListOpts(a));
+        return ok({ count: r.data.length, categories: project(r.data, EXPCAT_FIELDS) });
       } catch (e) {
         return fail(e);
       }
@@ -498,6 +529,71 @@ export function registerTools(server: McpServer, cfg: Config): void {
   );
 
   server.registerTool(
+    "in_update_invoice",
+    {
+      title: "Update invoice",
+      description:
+        "Partially update an invoice (drafts and undeleted invoices only). Omitted fields keep their current " +
+        "values — unlike clients/contacts, a sparse invoice update does not wipe anything. Supplying line_items " +
+        "replaces the whole array. Deleted invoices must be restored before editing.",
+      inputSchema: {
+        id: z.string().describe("Invoice id (hashed string id, not the display number)."),
+        client_id: z.string().optional(),
+        line_items: z.array(lineItemSchema).min(1).optional().describe("Replaces ALL line items when provided."),
+        date: z.string().optional().describe("Y-m-d invoice date."),
+        due_date: z.string().optional().describe("Y-m-d due date."),
+        po_number: z.string().optional(),
+        public_notes: z.string().optional().describe("Visible to the client."),
+        private_notes: z.string().optional().describe("Internal only."),
+        terms: z.string().optional(),
+        footer: z.string().optional(),
+        discount: z.number().optional(),
+      },
+      annotations: WRITE,
+    },
+    async (a) => {
+      try {
+        const { id, ...body } = a;
+        return ok((await client.update("invoices", id, body)).data);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "in_upload_document",
+    {
+      title: "Attach document",
+      description:
+        "Attach a local file (e.g. a worklog PDF) to an entity. The file is read from the filesystem the MCP " +
+        "server runs on. Attached documents appear on the record and can be shown in the client portal / " +
+        "included in emails depending on company settings.",
+      inputSchema: {
+        entity: z
+          .enum(["invoices", "quotes", "clients", "tasks", "projects", "expenses", "payments", "products"])
+          .describe("Entity collection the record belongs to."),
+        id: z.string().describe("Record id (hashed string id)."),
+        file_path: z.string().describe("Absolute path of the file to attach."),
+        file_name: z.string().optional().describe("Name to store the document under (default: basename)."),
+      },
+      annotations: WRITE,
+    },
+    async (a) => {
+      try {
+        const res = (await client.uploadDocument<Json>(a.entity, a.id, a.file_path, a.file_name)).data;
+        const docs = Array.isArray(res?.documents) ? (res.documents as Json[]) : [];
+        return ok({
+          attached: true,
+          documents: docs.map((d) => ({ id: d.id, name: d.name, size: d.size, hash: d.hash })),
+        });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
     "in_invoice_action",
     {
       title: "Invoice lifecycle action",
@@ -598,20 +694,104 @@ export function registerTools(server: McpServer, cfg: Config): void {
     "in_create_expense",
     {
       title: "Create expense",
-      description: "Record an expense.",
+      description:
+        "Record an expense. currency_id sets the expense currency (defaults to the company currency); " +
+        "common ids: 1=USD, 3=EUR, 17=CHF. Attach the source receipt afterwards with in_upload_document.",
       inputSchema: {
-        amount: z.number(),
-        date: z.string().optional(),
+        amount: z.number().describe("Amount in the expense currency."),
+        date: z.string().optional().describe("Y-m-d expense date."),
         vendor_id: z.string().optional(),
         client_id: z.string().optional(),
+        project_id: z.string().optional().describe("Assign to a project; the project's client is applied automatically."),
         category_id: z.string().optional(),
+        currency_id: z.string().optional().describe("Numeric currency id as string; omit for company currency."),
+        exchange_rate: z.number().optional(),
+        transaction_reference: z.string().optional().describe("Provider invoice/receipt number — also used for deduplication."),
         public_notes: z.string().optional(),
+        private_notes: z.string().optional(),
       },
       annotations: WRITE,
     },
     async (a) => {
       try {
         return ok((await client.create("expenses", a)).data);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "in_update_expense",
+    {
+      title: "Update expense",
+      description:
+        "Partially update an expense (e.g. assign a project/category). Omitted fields are preserved — including " +
+        "currency_id, which Invoice Ninja would otherwise reset to the company currency on every update.",
+      inputSchema: {
+        id: z.string().describe("Expense id (hashed string id)."),
+        amount: z.number().optional(),
+        date: z.string().optional(),
+        vendor_id: z.string().optional(),
+        client_id: z.string().optional(),
+        project_id: z.string().optional().describe("Assign to a project; the project's client is applied automatically."),
+        category_id: z.string().optional(),
+        currency_id: z.string().optional(),
+        transaction_reference: z.string().optional(),
+        public_notes: z.string().optional(),
+        private_notes: z.string().optional(),
+      },
+      annotations: WRITE,
+    },
+    async (a) => {
+      try {
+        const { id, ...body } = a;
+        if (!body.currency_id) {
+          // IN's UpdateExpenseRequest resets an omitted currency_id to the
+          // company currency — resend the current one to keep it stable.
+          const current = (await client.get<Json>("expenses", id)).data;
+          body.currency_id = current.currency_id as string;
+        }
+        return ok((await client.update("expenses", id, body)).data);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "in_create_vendor",
+    {
+      title: "Create vendor",
+      description: "Create a vendor (expense counterparty), e.g. a hosting or domain provider.",
+      inputSchema: {
+        name: z.string(),
+        website: z.string().optional(),
+        currency_id: z.string().optional().describe("Vendor's usual billing currency (numeric id as string)."),
+        private_notes: z.string().optional(),
+      },
+      annotations: WRITE,
+    },
+    async (a) => {
+      try {
+        return ok((await client.create("vendors", a)).data);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "in_create_expense_category",
+    {
+      title: "Create expense category",
+      description: "Create an expense category (e.g. Hosting, Domains, SaaS-Tools).",
+      inputSchema: { name: z.string(), color: z.string().optional().describe("Hex color, e.g. #3f51b5.") },
+      annotations: WRITE,
+    },
+    async (a) => {
+      try {
+        return ok((await client.create("expense_categories", a)).data);
       } catch (e) {
         return fail(e);
       }
