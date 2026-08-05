@@ -807,6 +807,13 @@ export function registerTools(server: McpServer, cfg: Config): void {
     description: z.string().optional(),
   });
 
+  const taskEntryPatchSchema = z.object({
+    index: z.number().int().min(0).describe("0-based position of the entry in the task's time log."),
+    start: z.number().int().optional().describe("New start epoch seconds."),
+    end: z.number().int().optional().describe("New end epoch seconds; 0 = still running."),
+    description: z.string().optional().describe("New per-entry description."),
+  });
+
   function entriesToTimeLog(rows: { start: number; end: number; description?: string }[]): TimeEntry[] {
     return rows.map((r) => (r.description ? [r.start, r.end, r.description] : [r.start, r.end]));
   }
@@ -839,6 +846,70 @@ export function registerTools(server: McpServer, cfg: Config): void {
           body.time_log = serializeTimeLog(entriesToTimeLog(a.time_entries));
         }
         return ok(enrichTask((await client.create<Json>("tasks", body)).data));
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "in_update_task",
+    {
+      title: "Update task",
+      description:
+        "Partially update a task: its metadata (description, client, project, rate) and/or its existing time " +
+        "entries. Omitted fields are preserved. Use patch_entries to correct or label individual entries in " +
+        "place — the rest of each entry (e.g. the billable flag) is kept. Use time_entries to replace the whole " +
+        "log, which is how you delete or reorder entries. To append a new entry, use in_log_time instead.",
+      inputSchema: {
+        id: z.string().describe("Task id (hashed string id, not the display number)."),
+        description: z.string().optional().describe("Task description; becomes the invoice line-item text."),
+        client_id: z.string().optional(),
+        project_id: z.string().optional(),
+        rate: z.number().optional().describe("Hourly rate override."),
+        time_entries: z.array(taskEntrySchema).optional().describe("Replaces ALL time entries when provided."),
+        patch_entries: z
+          .array(taskEntryPatchSchema)
+          .optional()
+          .describe("In-place edits of existing entries, addressed by 0-based index."),
+      },
+      annotations: WRITE,
+    },
+    async (a) => {
+      try {
+        const { id, time_entries, patch_entries, ...meta } = a;
+        if (time_entries && patch_entries) {
+          return fail(
+            new Error("Provide either 'time_entries' (full replacement) or 'patch_entries' (in-place edits), not both."),
+          );
+        }
+        const body: Json = {};
+        for (const [k, v] of Object.entries(meta)) {
+          if (v !== undefined) body[k] = v;
+        }
+        if (time_entries) {
+          body.time_log = serializeTimeLog(entriesToTimeLog(time_entries));
+        } else if (patch_entries?.length) {
+          const entries = parseTimeLog((await client.get<Json>("tasks", id)).data.time_log);
+          for (const p of patch_entries) {
+            const entry = entries[p.index];
+            if (!entry) {
+              return fail(
+                new Error(`No time entry at index ${p.index}; the task has ${entries.length} entr${entries.length === 1 ? "y" : "ies"}.`),
+              );
+            }
+            // Only touch what was asked for; trailing elements (description,
+            // billable flag) that IN appends are left as they are.
+            if (p.start !== undefined) entry[0] = p.start;
+            if (p.end !== undefined) entry[1] = p.end;
+            if (p.description !== undefined) entry[2] = p.description;
+          }
+          body.time_log = serializeTimeLog(entries);
+        }
+        if (Object.keys(body).length === 0) {
+          return fail(new Error("Nothing to update — supply at least one field to change."));
+        }
+        return ok(enrichTask((await client.update<Json>("tasks", id, body)).data));
       } catch (e) {
         return fail(e);
       }
