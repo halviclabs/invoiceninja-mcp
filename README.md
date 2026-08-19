@@ -156,4 +156,8 @@ in-process.
 - Tax-period reporting tool (quarterly VAT)
 - `outputSchema` on tools for structured-content clients
 
+## Author
+
+Built by [Halvic Labs](https://halvic.ch) — a Swiss AI-engineering workshop.
+
 MIT licensed.

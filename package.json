@@ -2,6 +2,12 @@
   "name": "invoiceninja-mcp",
   "version": "0.1.0",
   "description": "Self-hosted MCP server for Invoice Ninja (v5). Sovereignty-friendly, no third-party SaaS bridge.",
+  "homepage": "https://halvic.ch",
+  "author": "Halvic Labs <hire@halvic.ch> (https://halvic.ch)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/halviclabs/invoiceninja-mcp.git"
+  },
   "type": "module",
   "bin": {
     "invoiceninja-mcp": "dist/index.js"
