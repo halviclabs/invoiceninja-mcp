@@ -232,6 +232,26 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
+  server.registerTool(
+    "in_get_quote",
+    {
+      title: "Get quote",
+      description: "Fetch a full quote by id, including line items and the client relationship.",
+      inputSchema: {
+        id: z.string().describe("Quote id."),
+        include: z.string().optional().describe("Defaults to 'client'. e.g. 'client,invoices'."),
+      },
+      annotations: RO,
+    },
+    async (a) => {
+      try {
+        return ok((await client.get("quotes", a.id, a.include ?? "client")).data);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
   // --------------------------------------------------------------- payments
   server.registerTool(
     "in_list_payments",
@@ -476,6 +496,12 @@ export function registerTools(server: McpServer, cfg: Config): void {
         contacts: z.array(contactSchema.extend({ id: z.string().optional() })).optional(),
         vat_number: z.string().optional(),
         private_notes: z.string().optional(),
+        address1: z.string().optional(),
+        address2: z.string().optional(),
+        city: z.string().optional(),
+        state: z.string().optional(),
+        postal_code: z.string().optional(),
+        country_id: z.string().optional().describe("Numeric country id as string, e.g. '756' for Switzerland."),
       },
       annotations: WRITE,
     },
@@ -613,6 +639,32 @@ export function registerTools(server: McpServer, cfg: Config): void {
           return ok(Array.isArray(res) ? res[0] : res);
         }
         return ok((await client.action("invoices", a.id, a.action)).data);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "in_quote_action",
+    {
+      title: "Quote lifecycle action",
+      description:
+        "Apply a lifecycle action to a quote: mark_sent, approve, convert (to invoice), archive, restore, delete, email.",
+      inputSchema: {
+        id: z.string(),
+        action: z.enum(["mark_sent", "approve", "convert", "archive", "restore", "delete", "email"]),
+      },
+      annotations: DESTRUCTIVE,
+    },
+    async (a) => {
+      try {
+        // "email" is only implemented on the bulk endpoint, not the per-quote action route.
+        if (a.action === "email") {
+          const res = (await client.bulk<Json[]>("quotes", "email", [a.id])).data;
+          return ok(Array.isArray(res) ? res[0] : res);
+        }
+        return ok((await client.action("quotes", a.id, a.action)).data);
       } catch (e) {
         return fail(e);
       }
