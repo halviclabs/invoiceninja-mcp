@@ -52,6 +52,7 @@ Both entry points call the same `createServer()`; transport is the only differen
 - **IDs are hashed strings**, not the human-facing display `number`. Tools take the hashed `id`.
 - **Lifecycle actions:** invoices use the per-entity route `GET /invoices/<id>/<action>` (`client.action`) for `mark_sent`/`mark_paid`/`archive`/`restore`/`delete`/`cancel` — but `email` only exists on the bulk endpoint (`client.bulk`). Tasks have **no** per-entity action route: archive/restore/delete go through `POST /tasks/bulk` (`client.bulk`), and the task `invoice` action is implemented by creating an invoice whose line item carries `task_id` (Invoice Ninja then links `task.invoice_id`). There is no `PUT ?action=` route in IN v5 — a PUT with a sparse body is treated as a plain update and can wipe fields like `time_log`.
 - Email lives on the **contact**, not the client.
+- **Company-level `invoice_footer` can silently no-op:** `PUT /companies/<id>` with `settings.invoice_footer` returns 200 but the field reads back empty — observed on this instance. The footer/IBAN that actually renders on a client's invoices/quotes comes from that client's assigned `group_settings` record instead. A client only picks up a group's footer once its `group_settings_id` is set (via `in_update_client`) — by default clients have no group assigned, so group-level footers set up ahead of time go unused until each client is explicitly assigned.
 
 ## stdio transport caveat
 

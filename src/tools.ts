@@ -502,6 +502,14 @@ export function registerTools(server: McpServer, cfg: Config): void {
         state: z.string().optional(),
         postal_code: z.string().optional(),
         country_id: z.string().optional().describe("Numeric country id as string, e.g. '756' for Switzerland."),
+        group_settings_id: z
+          .string()
+          .optional()
+          .describe(
+            "Assigns the client to a group_settings record (hashed id). Group-level invoice_footer/design " +
+              "only render on that client's invoices/quotes if this is set — the company-level invoice_footer " +
+              "can silently fail to persist on this Invoice Ninja instance.",
+          ),
       },
       annotations: WRITE,
     },
