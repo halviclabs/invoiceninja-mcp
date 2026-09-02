@@ -510,13 +510,24 @@ export function registerTools(server: McpServer, cfg: Config): void {
               "only render on that client's invoices/quotes if this is set — the company-level invoice_footer " +
               "can silently fail to persist on this Invoice Ninja instance.",
           ),
+        currency_id: z
+          .string()
+          .optional()
+          .describe(
+            "Numeric currency id as string; common ids: 1=USD, 3=EUR, 17=CHF. Sets the client's default " +
+              "currency for new invoices/quotes (nested under settings.currency_id on this API).",
+          ),
       },
       annotations: WRITE,
     },
     async (a) => {
       try {
-        const { id, ...body } = a;
-        return ok((await client.update("clients", id, body)).data);
+        const { id, currency_id, ...body } = a;
+        const payload: Record<string, unknown> = { ...body };
+        if (currency_id !== undefined) {
+          payload.settings = { currency_id };
+        }
+        return ok((await client.update("clients", id, payload)).data);
       } catch (e) {
         return fail(e);
       }
@@ -550,6 +561,11 @@ export function registerTools(server: McpServer, cfg: Config): void {
         terms: z.string().optional(),
         footer: z.string().optional(),
         discount: z.number().optional(),
+        currency_id: z
+          .string()
+          .optional()
+          .describe("Numeric currency id as string; common ids: 1=USD, 3=EUR, 17=CHF. Omit for client's default currency."),
+        exchange_rate: z.number().optional(),
       },
       annotations: WRITE,
     },
@@ -582,6 +598,11 @@ export function registerTools(server: McpServer, cfg: Config): void {
         terms: z.string().optional(),
         footer: z.string().optional(),
         discount: z.number().optional(),
+        currency_id: z
+          .string()
+          .optional()
+          .describe("Numeric currency id as string; common ids: 1=USD, 3=EUR, 17=CHF."),
+        exchange_rate: z.number().optional(),
       },
       annotations: WRITE,
     },
