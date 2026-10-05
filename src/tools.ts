@@ -504,7 +504,8 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Update client",
       description:
         "Update a client. IMPORTANT: include the FULL contacts array (with each contact's id) — " +
-        "Invoice Ninja replaces contacts wholesale on every update.",
+        "Invoice Ninja replaces contacts wholesale on every update. Client settings (e.g. currency) are " +
+        "preserved automatically; pass currency_id only to change it.",
       inputSchema: {
         id: z.string(),
         name: z.string().optional(),
@@ -538,10 +539,13 @@ export function registerTools(server: McpServer, cfg: Config): void {
     async (a) => {
       try {
         const { id, currency_id, ...body } = a;
-        const payload: Record<string, unknown> = { ...body };
-        if (currency_id !== undefined) {
-          payload.settings = { currency_id };
-        }
+        // IN replaces the client's settings object on every PUT: a body without
+        // `settings` resets them (incl. currency_id) to the company defaults.
+        // Always resend the current settings, overriding only what was asked.
+        const current = (await client.get<Json>("clients", id)).data;
+        const settings: Json = { ...((current.settings as Json | undefined) ?? {}) };
+        if (currency_id !== undefined) settings.currency_id = currency_id;
+        const payload: Json = { ...body, settings };
         return ok((await client.update("clients", id, payload)).data);
       } catch (e) {
         return fail(e);
