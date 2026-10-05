@@ -109,6 +109,21 @@ export function registerTools(server: McpServer, cfg: Config): void {
   const client = new InvoiceNinjaClient(cfg);
   const RO = { readOnlyHint: true } as const;
 
+  /**
+   * PUT a task while preserving its display number. Invoice Ninja assigns a
+   * fresh task number when an update body omits `number`, so every time-log
+   * write (log/start/stop/patch) used to renumber the task. Pass the task
+   * record when it has already been fetched to avoid a second GET.
+   */
+  async function putTask(id: string, body: Json, current?: Json): Promise<Json> {
+    const task = current ?? (await client.get<Json>("tasks", id)).data;
+    const pinned: Json = { ...body };
+    if (pinned.number === undefined && typeof task.number === "string" && task.number !== "") {
+      pinned.number = task.number;
+    }
+    return (await client.update<Json>("tasks", id, pinned)).data;
+  }
+
   // ---------------------------------------------------------------- health
   server.registerTool(
     "in_ping",
@@ -965,13 +980,15 @@ export function registerTools(server: McpServer, cfg: Config): void {
           );
         }
         const body: Json = {};
+        let current: Json | undefined;
         for (const [k, v] of Object.entries(meta)) {
           if (v !== undefined) body[k] = v;
         }
         if (time_entries) {
           body.time_log = serializeTimeLog(entriesToTimeLog(time_entries));
         } else if (patch_entries?.length) {
-          const entries = parseTimeLog((await client.get<Json>("tasks", id)).data.time_log);
+          current = (await client.get<Json>("tasks", id)).data;
+          const entries = parseTimeLog(current.time_log);
           for (const p of patch_entries) {
             const entry = entries[p.index];
             if (!entry) {
@@ -990,7 +1007,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
         if (Object.keys(body).length === 0) {
           return fail(new Error("Nothing to update — supply at least one field to change."));
         }
-        return ok(enrichTask((await client.update<Json>("tasks", id, body)).data));
+        return ok(enrichTask(await putTask(id, body, current)));
       } catch (e) {
         return fail(e);
       }
@@ -1014,7 +1031,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
           return ok({ ...enrichTask(task), note: "Task is already running; no change made." });
         }
         entries.push([a.at ?? nowEpoch(), 0]);
-        const updated = (await client.update<Json>("tasks", a.id, { time_log: serializeTimeLog(entries) })).data;
+        const updated = await putTask(a.id, { time_log: serializeTimeLog(entries) }, task);
         return ok(enrichTask(updated));
       } catch (e) {
         return fail(e);
@@ -1038,7 +1055,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
           return ok({ ...enrichTask(task), note: "Task is not running; nothing to stop." });
         }
         entries[entries.length - 1][1] = a.at ?? nowEpoch();
-        const updated = (await client.update<Json>("tasks", a.id, { time_log: serializeTimeLog(entries) })).data;
+        const updated = await putTask(a.id, { time_log: serializeTimeLog(entries) }, task);
         return ok(enrichTask(updated));
       } catch (e) {
         return fail(e);
@@ -1069,7 +1086,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
         const task = (await client.get<Json>("tasks", a.id)).data;
         const entries = parseTimeLog(task.time_log);
         entries.push(a.description ? [a.start, end, a.description] : [a.start, end]);
-        const updated = (await client.update<Json>("tasks", a.id, { time_log: serializeTimeLog(entries) })).data;
+        const updated = await putTask(a.id, { time_log: serializeTimeLog(entries) }, task);
         return ok(enrichTask(updated));
       } catch (e) {
         return fail(e);
