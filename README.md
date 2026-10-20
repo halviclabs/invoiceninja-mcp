@@ -19,6 +19,11 @@ The existing options all have a catch:
 This server is standalone (no modification to Invoice Ninja), covers **read + write**,
 gates all mutations behind an explicit flag, and deploys anywhere Node runs.
 
+The story behind it — why a chat-driven invoicing workflow, what the write-gating looks
+like in daily use, and Invoice Ninja REST API examples in curl and Python — is in the
+blog post [Automate invoicing with MCP: my Invoice Ninja server](https://halvic.ch/en/blog/automate-your-invoicing-with-mcp)
+(German: [Buchhaltung automatisieren mit MCP](https://halvic.ch/de/blog/buchhaltung-automatisieren-mit-mcp)).
+
 ## Tools
 
 **Read (always on):**
@@ -159,5 +164,6 @@ in-process.
 ## Author
 
 Built by [Halvic Labs](https://halvic.ch) — a Swiss AI-engineering workshop.
+More on building MCP servers: [Write your first MCP server](https://halvic.ch/en/blog/write-your-first-mcp-server).
 
 MIT licensed.
