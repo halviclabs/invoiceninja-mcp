@@ -42,6 +42,9 @@ blog post [Automate invoicing with MCP: my Invoice Ninja server](https://halvic.
 List results are projected to key fields to keep model context lean; use the
 `in_get_*` tools for full records.
 
+`in_upload_document` is available only over local stdio with writes enabled. It reads files accessible
+to the local process. HTTP never exposes this tool, including when safe mode is off.
+
 **Safe mode and a deny list.** `INVOICE_NINJA_SAFE_MODE=true` keeps writes on but leaves out
 `in_invoice_action`, `in_quote_action` and `in_create_payment`, and narrows `in_task_action` to
 `archive` and `restore`: the model prepares drafts, clients, expenses, tasks and time entries, and
@@ -144,7 +147,8 @@ Always set `MCP_BEARER_TOKEN` for remote exposure — clients send
 
 ### Credentials per request (several accounts, one server)
 
-Behind the bearer, a request may carry its own Invoice Ninja credentials, so one server serves any
+With `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true` and bearer authentication, a request carries
+its own Invoice Ninja credentials, so one server serves any
 number of companies or people. ALVIREQ runs it this way next to each instance: the administrator
 connects the company token on the plugin page, people may connect their own, and every request
 carries the token of the connection in use.
@@ -155,14 +159,16 @@ carries the token of the connection in use.
 | `X-Invoice-Ninja-Token` | API token |
 | `X-Invoice-Ninja-Safe-Mode` | `false` allows sending and settling; any other value keeps safe mode on |
 
-Each header overrides its environment variable for that request only. The headers are read only when
-`MCP_BEARER_TOKEN` is set and matches; an open endpoint ignores them, so nobody unauthenticated can
-choose where a token goes. `INVOICE_NINJA_SAFE_MODE=true` in the environment is a floor a request
+By default, all three headers are ignored and the server uses its environment configuration.
+To enable them, set `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`; `MCP_BEARER_TOKEN` must
+also be set and match. `INVOICE_NINJA_SAFE_MODE=true` in the environment is a floor a request
 cannot lower, and `INVOICE_NINJA_ALLOW_WRITES` still decides whether write tools exist at all.
 
-With `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true` the address and token come only from the
-request: the environment needs neither, the server refuses to start without `MCP_BEARER_TOKEN`, and
-a request without them gets `400 {"error":"missing_credentials"}`. A refused address gets
+In request-credentials mode, both URL and token must be present on every request. The environment's
+`INVOICE_NINJA_URL`, `INVOICE_NINJA_TOKEN` and `INVOICE_NINJA_SECRET` are not used. Instances requiring
+`X-Api-Secret` must use environment-credentials mode; there is no per-request API-secret header.
+The server refuses to start without `MCP_BEARER_TOKEN`, and a request missing either URL or token gets
+`400 {"error":"missing_credentials"}`. A refused address gets
 `400 {"error":"invalid_url"}`, a repeated or malformed header `400 {"error":"invalid_header"}`;
 nothing is sent to Invoice Ninja in either case. Tokens are never logged.
 
@@ -186,7 +192,7 @@ docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_ALLOW_WRITES=true 
 |---|---|---|
 | `INVOICE_NINJA_URL` | — (required¹) | Instance base URL, no `/api/v1` |
 | `INVOICE_NINJA_TOKEN` | — (required¹) | Company API token |
-| `INVOICE_NINJA_SECRET` | — | Optional `X-Api-Secret` |
+| `INVOICE_NINJA_SECRET` | — | Optional `X-Api-Secret`; environment credentials only |
 | `INVOICE_NINJA_ALLOW_WRITES` | `false` | Enable mutating tools |
 | `INVOICE_NINJA_SAFE_MODE` | `false` | With writes on, leave out sending, settling, cancelling, deleting and payments; a floor for requests |
 | `INVOICE_NINJA_DISABLED_TOOLS` | — | Tool names never registered, comma-separated |
@@ -194,9 +200,9 @@ docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_ALLOW_WRITES=true 
 | `INVOICE_NINJA_MAX_PER_PAGE` | `100` | Cap on rows per list call |
 | `INVOICE_NINJA_TIMEOUT_MS` | `30000` | Per-request timeout |
 | `PORT` / `HOST` | `8787` / `127.0.0.1` | HTTP transport bind |
-| `MCP_BEARER_TOKEN` | — | Bearer auth for HTTP transport; credential headers are read only behind it |
+| `MCP_BEARER_TOKEN` | — | Bearer auth for HTTP transport; required for request-credentials mode |
 
-¹ Not with `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`, and a request's headers override them.
+¹ Not with `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`, which requires both values in request headers instead.
 
 ## Alternative: bake it into Laravel
 
@@ -211,7 +217,7 @@ in-process.
 
 - Recurring invoices + subscriptions
 - Per-project time & budget reporting (hours logged vs budgeted_hours)
-- Document/attachment upload (multipart)
+- Document/attachment upload (multipart, local stdio only)
 - Tax-period reporting tool (quarterly VAT)
 - `outputSchema` on tools for structured-content clients
 

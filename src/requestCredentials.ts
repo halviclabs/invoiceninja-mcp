@@ -7,8 +7,8 @@
  *   X-Invoice-Ninja-Token      the API token
  *   X-Invoice-Ninja-Safe-Mode  "false" to allow sending and settling; anything else keeps safe mode on
  *
- * They are read only after the bearer check passed, and never when the server runs without MCP_BEARER_TOKEN: an
- * unauthenticated caller must not choose where the server sends a token. Values are never logged.
+ * They are read only with INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true and after the bearer check passed.
+ * The URL and token are required together; environment credentials are never attached. Values are never logged.
  */
 import type { IncomingHttpHeaders } from "node:http";
 import { ConfigError, checkRequestUrl, type ConfigOverrides } from "./config.js";

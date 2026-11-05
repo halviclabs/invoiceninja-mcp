@@ -9,8 +9,14 @@ export const SERVER_VERSION = "0.3.0";
  * Build a fully-wired McpServer instance from the environment, with a request's overrides on top (HTTP transport).
  * Throws ConfigError when the address or token is missing or the address is refused.
  */
-export function createServer(overrides: ConfigOverrides = {}, env: NodeJS.ProcessEnv = process.env): McpServer {
+export function createServer(
+  overrides: ConfigOverrides = {},
+  env: NodeJS.ProcessEnv = process.env,
+  transport: "stdio" | "http" = "stdio",
+): McpServer {
   const cfg = loadConfig(env, overrides);
+  // Remote callers must never gain access to files on the server through this tool.
+  if (transport === "http" && cfg.allowWrites) cfg.disabledTools.add("in_upload_document");
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
