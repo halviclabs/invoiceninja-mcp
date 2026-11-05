@@ -6,12 +6,12 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { ConfigError, type ConfigOverrides } from "./config.js";
+import { ConfigError, requireRequestCredentials, type ConfigOverrides } from "./config.js";
 import { credentialsFrom } from "./requestCredentials.js";
 import { createServer } from "./server.js";
 
 export interface HttpOptions {
-  /** MCP_BEARER_TOKEN; without it the endpoint is open and credential headers are ignored. */
+  /** MCP_BEARER_TOKEN; required for request credentials. */
   bearer?: string;
   env?: NodeJS.ProcessEnv;
   path?: string;
@@ -43,6 +43,10 @@ export function createHandler(opts: HttpOptions = {}): (req: IncomingMessage, re
   const env = opts.env ?? process.env;
   const bearer = opts.bearer?.trim() || undefined;
   const path = opts.path ?? "/mcp";
+  const fromRequestOnly = requireRequestCredentials(env);
+  if (fromRequestOnly && !bearer) {
+    throw new ConfigError("missing_credentials", "INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS needs MCP_BEARER_TOKEN.");
+  }
 
   return async (req, res) => {
     if (req.method === "GET" && req.url === "/healthz") return json(res, 200, { status: "ok" });
@@ -54,12 +58,12 @@ export function createHandler(opts: HttpOptions = {}): (req: IncomingMessage, re
 
     if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
 
-    // Credentials from the request only behind the bearer; an open endpoint uses the environment alone.
+    // Request credentials require explicit opt-in as well as bearer authentication.
     let overrides: ConfigOverrides = {};
     let server: ReturnType<typeof createServer>;
     try {
-      if (bearer) overrides = credentialsFrom(req.headers);
-      server = createServer(overrides, env);
+      if (fromRequestOnly) overrides = credentialsFrom(req.headers);
+      server = createServer(overrides, env, "http");
     } catch (err) {
       if (err instanceof ConfigError) return json(res, 400, { error: err.code, message: err.message });
       return json(res, 500, { error: "server_error" });

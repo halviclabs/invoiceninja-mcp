@@ -25,10 +25,26 @@ test("overrides win over the environment", () => {
 test("with the request flag the environment's address and token are not used", () => {
   const env = { ...ENV, INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS: "true" };
   assert.throws(() => loadConfig(env), (e: unknown) => e instanceof ConfigError && e.code === "missing_credentials");
-  assert.throws(() => loadConfig(env, { token: "only-token" }), /carried none/);
+  assert.throws(() => loadConfig(env, { token: "only-token" }), /both are required/);
   const cfg = loadConfig({ INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS: "1" }, { baseUrl: "https://b.ch", token: "b" });
   assert.equal(cfg.baseUrl, "https://b.ch");
   assert.equal(cfg.token, "b");
+});
+
+test("partial request credentials never fall back to environment credentials", () => {
+  for (const overrides of [{ baseUrl: "https://other.example.ch" }, { token: "only-token" }, { baseUrl: "https://other.example.ch", token: " " }]) {
+    assert.throws(() => loadConfig(ENV, overrides), (e: unknown) => e instanceof ConfigError && e.code === "missing_credentials");
+  }
+});
+
+test("environment API secret is only used with environment credentials", () => {
+  const env = { ...ENV, INVOICE_NINJA_SECRET: "env-secret" };
+  assert.equal(loadConfig(env).secret, "env-secret");
+  for (const required of ["true", "false"]) {
+    const cfg = loadConfig({ ...env, INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS: required }, { baseUrl: "https://other.example.ch", token: "request-token" });
+    assert.equal(cfg.token, "request-token");
+    assert.equal(cfg.secret, undefined);
+  }
 });
 
 test("safe mode: the request may switch it on; the environment's safe mode is a floor", () => {

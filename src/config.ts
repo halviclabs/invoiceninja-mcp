@@ -83,7 +83,8 @@ export function checkRequestUrl(raw: string): string {
 }
 
 /**
- * The configuration for one server instance: the environment, with a request's overrides on top.
+ * The configuration for one server instance. Request credentials must be a complete pair and never inherit
+ * the environment's token or API secret.
  *
  * With INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true the address and token come only from the request, so the
  * environment needs neither (ALVIREQ's chart runs it that way). Safe mode from the environment is a floor: a request
@@ -91,14 +92,15 @@ export function checkRequestUrl(raw: string): string {
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: ConfigOverrides = {}): Config {
   const fromRequestOnly = requireRequestCredentials(env);
-  const rawUrl = overrides.baseUrl ?? (fromRequestOnly ? undefined : env.INVOICE_NINJA_URL?.trim());
-  const token = overrides.token ?? (fromRequestOnly ? undefined : env.INVOICE_NINJA_TOKEN?.trim());
+  const requestCredentials = fromRequestOnly || overrides.baseUrl !== undefined || overrides.token !== undefined;
+  const rawUrl = requestCredentials ? overrides.baseUrl : env.INVOICE_NINJA_URL?.trim();
+  const token = requestCredentials ? overrides.token : env.INVOICE_NINJA_TOKEN?.trim();
 
-  if (fromRequestOnly && (!rawUrl || !token)) {
+  if (requestCredentials && (!rawUrl?.trim() || !token?.trim())) {
     throw new ConfigError(
       "missing_credentials",
       "This server takes the Invoice Ninja address and token from each request " +
-        "(X-Invoice-Ninja-Url and X-Invoice-Ninja-Token); the request carried none.",
+        "(X-Invoice-Ninja-Url and X-Invoice-Ninja-Token); both are required.",
     );
   }
   if (!rawUrl) {
@@ -118,9 +120,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Conf
 
   const envSafeMode = bool(env.INVOICE_NINJA_SAFE_MODE, false);
   return {
-    baseUrl: normalizeBaseUrl(rawUrl),
+    baseUrl: requestCredentials ? checkRequestUrl(rawUrl) : normalizeBaseUrl(rawUrl),
     token,
-    secret: env.INVOICE_NINJA_SECRET?.trim() || undefined,
+    secret: requestCredentials ? undefined : env.INVOICE_NINJA_SECRET?.trim() || undefined,
     allowWrites: bool(env.INVOICE_NINJA_ALLOW_WRITES, false),
     safeMode: envSafeMode || overrides.safeMode === true,
     disabledTools: new Set(
