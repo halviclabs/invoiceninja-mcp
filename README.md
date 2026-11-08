@@ -117,15 +117,20 @@ claude mcp add invoiceninja -- node /abs/path/to/invoiceninja-mcp/dist/index.js
 ### Container
 
 ```bash
-docker build -t invoiceninja-mcp .
 docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_URL=https://invoicing.example.ch \
   -e INVOICE_NINJA_TOKEN=... -e INVOICE_NINJA_ALLOW_WRITES=true -e INVOICE_NINJA_SAFE_MODE=true \
-  -e MCP_BEARER_TOKEN=... invoiceninja-mcp
+  -e MCP_BEARER_TOKEN=... ghcr.io/halviclabs/invoiceninja-mcp:0.3.1
 ```
 
-The image runs `node dist/http.js` as a non-root user with a read-only root filesystem and answers
-`/healthz`. A tag `vX.Y.Z` publishes `harbor.halviclabs.ch/alvireq/invoiceninja-mcp:X.Y.Z` through
-`.github/workflows/image.yaml` (the version must match `package.json`; a published version is refused).
+Released images are `ghcr.io/halviclabs/invoiceninja-mcp:<X.Y.Z>` (also `X.Y`, `X` and `latest`; pin the
+digest in production). Every push to `main` additionally publishes `:main` and `:sha-<commit>`. The image runs
+`node dist/http.js` as a non-root user with a read-only root filesystem and answers `/healthz`.
+`docker build -t invoiceninja-mcp .` builds it locally.
+
+Releasing: bump `version` in `package.json` and `SERVER_VERSION` in `src/server.ts`, add the section to
+`CHANGELOG.md`, and push a tag `vX.Y.Z`. `.github/workflows/release.yml` checks that the three agree, runs CI,
+builds and smoke-tests the image, pushes it to GHCR and to Halvic's Harbor, and creates the GitHub Release
+from the changelog section.
 
 ### Remote (streamable HTTP, self-hosted)
 
@@ -185,6 +190,11 @@ docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_ALLOW_WRITES=true 
 - Reminder: **updating a client requires resending the full `contacts` array**
   (with each contact `id`) — Invoice Ninja replaces contacts wholesale. The
   `in_update_client` description states this; honour it or you'll drop contacts.
+- `in_upload_document` reads files from the machine the server runs on. It is never registered on the
+  HTTP transport; on stdio, disable it with `INVOICE_NINJA_DISABLED_TOOLS` if the host should not attach files.
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md); fixed issues and their reporters
+are listed there and in the [changelog](CHANGELOG.md).
 
 ## Configuration reference
 
@@ -217,7 +227,7 @@ in-process.
 
 - Recurring invoices + subscriptions
 - Per-project time & budget reporting (hours logged vs budgeted_hours)
-- Document/attachment upload (multipart, local stdio only)
+- Document upload confined to a configured staging directory (stdio)
 - Tax-period reporting tool (quarterly VAT)
 - `outputSchema` on tools for structured-content clients
 

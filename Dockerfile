@@ -10,7 +10,8 @@ WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci --no-audit --no-fund
 COPY src ./src
-RUN npm run build && npm prune --omit=dev --no-audit --no-fund
+# World-readable regardless of the build host's umask: the runtime stage runs as UID 10001 on root-owned files.
+RUN npm run build && npm prune --omit=dev --no-audit --no-fund && chmod -R a+rX /app
 
 FROM ${NODE_IMAGE}
 WORKDIR /app

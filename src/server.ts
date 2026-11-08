@@ -3,7 +3,7 @@ import { loadConfig, type ConfigOverrides } from "./config.js";
 import { registerTools } from "./tools.js";
 
 export const SERVER_NAME = "invoiceninja-mcp";
-export const SERVER_VERSION = "0.3.0";
+export const SERVER_VERSION = "0.3.1";
 
 /**
  * Build a fully-wired McpServer instance from the environment, with a request's overrides on top (HTTP transport).
