@@ -199,13 +199,18 @@ jobs:
           } >> notes.md
           cat notes.md
 
-      - name: Create the release
+      # Deleting and recreating the tag turns the existing release into a draft; a re-run updates and publishes it.
+      - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           set -euo pipefail
-          flags=(--title "v$VERSION" --notes-file notes.md --verify-tag)
+          flags=(--title "v$VERSION" --notes-file notes.md)
           [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
-          gh release create "$GITHUB_REF_NAME" "${flags[@]}"
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" "${flags[@]}" --draft=false
+          else
+            gh release create "$GITHUB_REF_NAME" "${flags[@]}" --verify-tag
+          fi
