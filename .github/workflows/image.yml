@@ -52,7 +52,7 @@ on:
         type: boolean
         default: true
       refuse-existing:
-        description: Release mode - fail when X.Y.Z is already in the registry instead of overwriting it.
+        description: Release mode - when X.Y.Z is already in the registry, report its digest and push nothing.
         type: boolean
         default: true
       smoke-command:
@@ -103,7 +103,7 @@ jobs:
       cancel-in-progress: false
     outputs:
       tags: ${{ steps.tags.outputs.tags }}
-      digest: ${{ steps.push.outputs.digest }}
+      digest: ${{ steps.push.outputs.digest || steps.existing.outputs.digest }}
     env:
       SMOKE_TOOLS: ${{ github.workspace }}/.smoke-tools
     steps:
@@ -227,20 +227,27 @@ jobs:
           username: ${{ secrets.registry-user || inputs.registry-username }}
           password: ${{ secrets.registry-password || github.token }}
 
-      - name: Refuse a version that is already published
+      # A re-run of a release (tag moved, job retried) must not overwrite what is already published: the existing digest
+      # is reported instead and nothing is pushed.
+      - name: Skip a version that is already published
+        id: existing
         if: ${{ !inputs.dry-run && inputs.mode == 'release' && inputs.refuse-existing }}
         env:
           IMAGE: ${{ inputs.image }}
           VERSION: ${{ inputs.version }}
         run: |
-          if docker manifest inspect "$IMAGE:$VERSION" > /dev/null 2>&1; then
-            echo "::error::$IMAGE:$VERSION is already published. Tag a new version instead."
-            exit 1
+          set -euo pipefail
+          if digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}' 2>/dev/null)"; then
+            echo "::notice::$IMAGE:$VERSION is already published ($digest); not pushed again."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push
         id: push
-        if: ${{ !inputs.dry-run }}
+        if: ${{ !inputs.dry-run && steps.existing.outputs.exists != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ inputs.context }}
