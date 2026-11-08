@@ -38,6 +38,15 @@ remote deployment. Stdio users need `INVOICE_NINJA_UPLOAD_DIR` only if they atta
 - Container: `compose.yaml` with read-only root filesystem, dropped capabilities, no privilege escalation and
   memory/CPU/pid caps; the Node base image is pinned by digest. The image build runs the type check and tests.
 
+### Changed
+
+- Invoice Ninja error responses pass their `message` and per-field `errors` to the model (strings only, bounded in
+  number and length), so a 422 says which field was rejected; nothing else from an upstream body is returned.
+- `/healthz` answers before the Host and Origin policy, so probes arriving with a pod IP or service name as Host
+  succeed. In request-credentials mode the rate limit applies per request token instead of per process.
+- JSON-RPC errors keep their code and message (bounded to 512 characters); an empty numeric environment variable
+  means "unset" instead of failing startup; a configuration error at HTTP start prints one line and exits 1.
+
 ### Added
 
 - `src/security.ts` (input bounds, path-segment validation) and `test/hardening.test.ts` covering each item above.

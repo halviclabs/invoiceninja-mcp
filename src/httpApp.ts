@@ -1,6 +1,6 @@
 /** Stateless HTTP with authentication and limits applied before SDK parsing or tool registration. */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { allowedRequestUrls, ConfigError, integer, loadConfig, requireRequestCredentials } from "./config.js";
 import { credentialsFrom } from "./requestCredentials.js";
@@ -81,10 +81,28 @@ export function createHandler(opts: HttpOptions = {}): (req: IncomingMessage, re
     catch { throw new ConfigError("invalid_config", "MCP_ALLOWED_ORIGINS requires exact origins."); }
   }
   let active = 0;
-  let windowStart = Date.now();
-  let used = 0;
+  // Fixed one-minute windows. With credentials per request the budget is per token (one busy connection must not
+  // starve the other accounts on a shared server); otherwise one process-wide window.
+  const windows = new Map<string, { start: number; used: number }>();
+  const MAX_WINDOWS = 10_000;
+  const overLimit = (req: IncomingMessage): boolean => {
+    const now = Date.now();
+    const key = fromRequestOnly
+      ? createHash("sha256").update(String(req.headers["x-invoice-ninja-token"] ?? "")).digest("hex")
+      : "global";
+    let w = windows.get(key);
+    if (!w || now - w.start >= 60_000) {
+      if (!w && windows.size >= MAX_WINDOWS) for (const [k, v] of windows) if (now - v.start >= 60_000) windows.delete(k);
+      if (!w && windows.size >= MAX_WINDOWS) return true;
+      w = { start: now, used: 0 };
+      windows.set(key, w);
+    }
+    return ++w.used > rate;
+  };
 
   return async (req, res) => {
+    // Static and unauthenticated: probes (kubelet, compose) arrive with the pod IP or service name as Host.
+    if (req.method === "GET" && req.url === "/healthz") return json(res, 200, { status: "ok" });
     let host: URL;
     try { host = new URL(`http://${req.headers.host ?? ""}`); }
     catch { return json(res, 403, { error: "Forbidden host." }); }
@@ -93,14 +111,12 @@ export function createHandler(opts: HttpOptions = {}): (req: IncomingMessage, re
       return json(res, 403, { error: "Forbidden host or repeated security header." });
     }
     if (req.headers.origin !== undefined && !origins.has(req.headers.origin)) return json(res, 403, { error: "Forbidden origin." });
-    if (req.method === "GET" && req.url === "/healthz") return json(res, 200, { status: "ok" });
     if ((req.url ?? "").split("?")[0] !== path) return json(res, 404, { error: "Not found." });
     const auth = Buffer.from(req.headers.authorization ?? "");
     if (auth.length !== expectedAuth.length || !timingSafeEqual(auth, expectedAuth)) return json(res, 401, { error: "Unauthorized." });
     if (req.method !== "POST") return json(res, 405, { error: "Method not allowed." });
     if (!(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) return json(res, 415, { error: "JSON required." });
-    if (Date.now() - windowStart >= 60_000) { windowStart = Date.now(); used = 0; }
-    if (++used > rate || active >= maxConcurrent) return json(res, 429, { error: "Request limit exceeded." });
+    if (overLimit(req) || active >= maxConcurrent) return json(res, 429, { error: "Request limit exceeded." });
     active++;
     let server: ReturnType<typeof createServer> | undefined;
     let transport: StreamableHTTPServerTransport | undefined;
@@ -111,9 +127,13 @@ export function createHandler(opts: HttpOptions = {}): (req: IncomingMessage, re
       const overrides = fromRequestOnly ? credentialsFrom(req.headers, req.headersDistinct) : {};
       server = createServer(overrides, env, "http");
       transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true, maxRequestBodySize: maxBytes });
+      // JSON-RPC errors keep their code and message (a client must tell "method not found" from "invalid params");
+      // only oversized texts, which echo the request through the SDK's validation output, are replaced.
       const send = transport.send.bind(transport);
       transport.send = async (message, options) => {
-        if ("error" in message) message = { ...message, error: { code: message.error.code, message: "Invalid MCP request." } };
+        if ("error" in message && (message.error.message.length > 512 || message.error.data !== undefined)) {
+          message = { ...message, error: { code: message.error.code, message: message.error.message.slice(0, 512) } };
+        }
         if ("result" in message && message.result.isError && JSON.stringify(message.result).length > 4096) {
           message = { ...message, result: { isError: true, content: [{ type: "text", text: "Tool input is invalid." }] } };
         }

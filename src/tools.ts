@@ -34,7 +34,7 @@ function ok(payload: unknown) {
 function fail(err: unknown) {
   const e =
     err instanceof InvoiceNinjaError
-      ? { error: err.message, status: err.status }
+      ? { error: err.message, status: err.status, ...(err.details ? { details: err.details } : {}) }
       : { error: err instanceof InputError ? err.message : "Tool request failed." };
   return { content: [{ type: "text" as const, text: JSON.stringify(e, null, 2) }], isError: true };
 }
@@ -686,7 +686,13 @@ export function registerTools(server: McpServer, cfg: Config): void {
           .enum(["invoices", "quotes", "clients", "tasks", "projects", "expenses", "payments", "products"])
           .describe("Entity collection the record belongs to."),
         id: z.string().max(MAX_STRING).describe("Record id (hashed string id)."),
-        file_path: z.string().max(MAX_STRING).describe("Absolute path of the file to attach."),
+        file_path: z
+          .string()
+          .max(MAX_STRING)
+          .describe(
+            `Path of the file to attach, inside the upload staging directory ${cfg.uploadDir} ` +
+              "(INVOICE_NINJA_UPLOAD_DIR); a relative path is resolved against it. Files elsewhere are refused.",
+          ),
         file_name: z.string().max(MAX_STRING).optional().describe("Name to store the document under (default: basename)."),
       },
       annotations: WRITE,

@@ -87,7 +87,7 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
       - name: npm 11.5.1 or newer (trusted publishing)
-        run: npm install -g npm@latest && npm --version
+        run: npm install -g npm@12.2.2 && npm --version
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Publish unless this version is already on npm
@@ -126,7 +126,7 @@ jobs:
           -e INVOICE_NINJA_ALLOW_WRITES=true \
           -e MCP_BEARER_TOKEN=ci-token \
           "$SMOKE_IMAGE"
-        docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine \
+        docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 \
           node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
           < "$SMOKE_TOOLS/scripts/ci/mcp-smoke.mjs"
 
@@ -148,7 +148,7 @@ jobs:
           -e INVOICE_NINJA_ALLOW_WRITES=true \
           -e MCP_BEARER_TOKEN=ci-token \
           "$SMOKE_IMAGE"
-        docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine \
+        docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 \
           node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
           < "$SMOKE_TOOLS/scripts/ci/mcp-smoke.mjs"
     secrets:

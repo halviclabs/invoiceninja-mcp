@@ -11,7 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createHandler } from "../src/httpApp.js";
 import { createServer } from "../src/server.js";
 import { loadConfig } from "../src/config.js";
-import { InvoiceNinjaClient } from "../src/client.js";
+import { InvoiceNinjaClient, InvoiceNinjaError } from "../src/client.js";
 
 const BEARER = "hardening-test-bearer";
 const TOKEN = "operator-token-never-return";
@@ -238,6 +238,73 @@ test("local uploads require a staging directory and reject escapes, symlinks and
 test("numeric configuration rejects disabled, nonfinite and excessive limits", () => {
   const env = { INVOICE_NINJA_URL: "https://ninja.example", INVOICE_NINJA_TOKEN: TOKEN };
   for (const name of ["INVOICE_NINJA_TIMEOUT_MS", "INVOICE_NINJA_MAX_PER_PAGE", "INVOICE_NINJA_MAX_RESPONSE_BYTES", "INVOICE_NINJA_MAX_UPLOAD_BYTES"]) {
-    for (const value of ["0", "-1", "NaN", "Infinity", "1.5", "99999999999", ""]) assert.throws(() => loadConfig({ ...env, [name]: value }));
+    for (const value of ["0", "-1", "NaN", "Infinity", "1.5", "99999999999"]) assert.throws(() => loadConfig({ ...env, [name]: value }));
   }
+});
+
+test("REV-01: /healthz answers before the Host policy (kubelet probes use the pod IP as Host)", async t => {
+  const { endpoint } = await fixture(t);
+  const base = await endpoint();
+  const status = await new Promise<number>((resolve, reject) => {
+    const req = request(`${base}/healthz`, { method: "GET", headers: { Host: "10.42.0.17:8787" } }, res => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(status, 200);
+  // The policy still applies to the MCP endpoint itself.
+  assert.equal((await rpc(base, ping, { Host: "10.42.0.17:8787" })).status, 403);
+});
+
+test("REV-02: upstream validation details reach the model, bounded and allowlisted", async t => {
+  const { env } = await fixture(t, (_req, res) => {
+    res.statusCode = 422;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({
+      message: "The given data was invalid.",
+      errors: { name: ["The name field is required."], "contacts.0.email": ["Must be a valid email.", 42] },
+      debug: { token: TOKEN, trace: "never-returned" },
+    }));
+  });
+  const client = new InvoiceNinjaClient(loadConfig(env));
+  await assert.rejects(client.create("clients", {}), (err: unknown) => {
+    assert.ok(err instanceof InvoiceNinjaError);
+    assert.equal(err.status, 422);
+    assert.deepEqual(err.details, {
+      message: "The given data was invalid.",
+      errors: { name: ["The name field is required."], "contacts.0.email": ["Must be a valid email."] },
+    });
+    assert.ok(!JSON.stringify(err).includes(TOKEN));
+    return true;
+  });
+});
+
+test("REV-03: an empty numeric variable means unset, invalid values still fail closed", async t => {
+  const { env } = await fixture(t);
+  assert.equal(loadConfig({ ...env, INVOICE_NINJA_MAX_PER_PAGE: "" }).maxPerPage, 100);
+  assert.equal(loadConfig({ ...env, INVOICE_NINJA_TIMEOUT_MS: "  " }).timeoutMs, 30_000);
+  assert.throws(() => loadConfig({ ...env, INVOICE_NINJA_MAX_PER_PAGE: "0" }), /positive integer/);
+  assert.throws(() => loadConfig({ ...env, INVOICE_NINJA_MAX_PER_PAGE: "abc" }), /positive integer/);
+});
+
+test("REV-04: JSON-RPC errors keep their code and message", async t => {
+  const { endpoint } = await fixture(t);
+  const base = await endpoint();
+  const body = await (await rpc(base, { jsonrpc: "2.0", id: 7, method: "no/such-method" })).json() as { error?: { code: number; message: string } };
+  assert.equal(body.error?.code, -32601);
+  assert.notEqual(body.error?.message, "Invalid MCP request.");
+  assert.ok((body.error?.message.length ?? 0) <= 512);
+});
+
+test("REV-05: the rate limit is per token when credentials come with the request", async t => {
+  const { ninja, endpoint } = await fixture(t);
+  const base = await endpoint({
+    INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS: "true",
+    INVOICE_NINJA_ALLOWED_URLS: ninja,
+    MCP_RATE_LIMIT_PER_MINUTE: "2",
+  });
+  const as = (token: string) => rpc(base, ping, { "X-Invoice-Ninja-Url": ninja, "X-Invoice-Ninja-Token": token });
+  assert.notEqual((await as("tenant-a")).status, 429);
+  assert.notEqual((await as("tenant-a")).status, 429);
+  assert.equal((await as("tenant-a")).status, 429, "third request of the same token in the window");
+  assert.notEqual((await as("tenant-b")).status, 429, "another token has its own budget");
 });

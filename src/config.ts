@@ -84,8 +84,9 @@ export function checkRequestUrl(raw: string, allowHttp = false): string {
 }
 
 export function integer(env: NodeJS.ProcessEnv, name: string, fallback: number, max: number): number {
-  const raw = env[name];
-  if (raw === undefined) return fallback;
+  // An empty value (a chart or compose template rendering an unset variable) means "not set".
+  const raw = env[name]?.trim();
+  if (raw === undefined || raw === "") return fallback;
   const value = Number(raw);
   if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1 || value > max) {
     throw new ConfigError("invalid_config", `${name} must be a positive integer no greater than ${max}.`);
@@ -93,10 +94,18 @@ export function integer(env: NodeJS.ProcessEnv, name: string, fallback: number, 
   return value;
 }
 
+// loadConfig runs per HTTP request; the allowlist is parsed once per distinct environment value.
+const allowedUrlsCache = new Map<string, Set<string>>();
+
 export function allowedRequestUrls(env: NodeJS.ProcessEnv): Set<string> {
+  const key = `${env.INVOICE_NINJA_ALLOWED_URLS ?? ""}\n${env.INVOICE_NINJA_ALLOW_HTTP ?? ""}`;
+  const cached = allowedUrlsCache.get(key);
+  if (cached) return cached;
   const allowHttp = bool(env.INVOICE_NINJA_ALLOW_HTTP, false);
   const urls = new Set((env.INVOICE_NINJA_ALLOWED_URLS ?? "").split(",").map(s => s.trim()).filter(Boolean).map(s => checkRequestUrl(s, allowHttp)));
   if (!urls.size) throw new ConfigError("invalid_config", "Request credentials require INVOICE_NINJA_ALLOWED_URLS (exact trusted base URLs).");
+  if (allowedUrlsCache.size >= 16) allowedUrlsCache.clear();
+  allowedUrlsCache.set(key, urls);
   return urls;
 }
 

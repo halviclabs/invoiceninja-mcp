@@ -24,14 +24,47 @@ export interface ListOptions {
   extra?: Record<string, string | number | boolean | undefined>;
 }
 
+/** What an Invoice Ninja error body may tell the model: its message and per-field validation errors, bounded. */
+export interface UpstreamDetails {
+  message?: string;
+  errors?: Record<string, string[]>;
+}
+
 export class InvoiceNinjaError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly details?: UpstreamDetails,
   ) {
     super(message);
     this.name = "InvoiceNinjaError";
   }
+}
+
+const DETAIL_CHARS = 300;
+const DETAIL_FIELDS = 20;
+const DETAIL_PER_FIELD = 5;
+
+/**
+ * Extract the allowlisted parts of an Invoice Ninja error body (Laravel's {message, errors: {field: [..]}}). Only
+ * strings, bounded in number and length; anything else in the body is dropped.
+ */
+export function upstreamDetails(buf: Buffer): UpstreamDetails | undefined {
+  let parsed: unknown;
+  try { parsed = JSON.parse(buf.toString("utf8")); } catch { return undefined; }
+  if (!parsed || typeof parsed !== "object") return undefined;
+  const body = parsed as Record<string, unknown>;
+  const out: UpstreamDetails = {};
+  if (typeof body.message === "string" && body.message) out.message = body.message.slice(0, DETAIL_CHARS);
+  if (body.errors && typeof body.errors === "object" && !Array.isArray(body.errors)) {
+    const errors: Record<string, string[]> = {};
+    for (const [field, value] of Object.entries(body.errors).slice(0, DETAIL_FIELDS)) {
+      const list = (Array.isArray(value) ? value : [value]).filter((v): v is string => typeof v === "string");
+      if (list.length && /^[\w.\-\[\]]{1,128}$/.test(field)) errors[field] = list.slice(0, DETAIL_PER_FIELD).map((v) => v.slice(0, DETAIL_CHARS));
+    }
+    if (Object.keys(errors).length) out.errors = errors;
+  }
+  return out.message || out.errors ? out : undefined;
 }
 
 export class InvoiceNinjaClient {
@@ -59,35 +92,20 @@ export class InvoiceNinjaClient {
       const headers = this.headers();
       if (multipart) delete headers["Content-Type"];
       const res = await fetch(url, { method, headers, body, signal: controller.signal, redirect: "error" });
+      let buf: Buffer;
+      try {
+        buf = await this.readBounded(res, controller);
+      } catch (err) {
+        // An oversized error body still reports the status; the details are simply absent.
+        if (!res.ok) throw new InvoiceNinjaError(`Invoice Ninja API returned HTTP ${res.status}.`, res.status);
+        throw err;
+      }
       if (!res.ok) {
-        await res.body?.cancel();
-        throw new InvoiceNinjaError(`Invoice Ninja API returned HTTP ${res.status}.`, res.status);
-      }
-      if (Number(res.headers.get("content-length")) > this.cfg.maxResponseBytes) {
-        await res.body?.cancel();
-        throw new InvoiceNinjaError("Invoice Ninja response is too large.", 0);
-      }
-      const reader = res.body?.getReader();
-      const chunks: Uint8Array[] = [];
-      let bytes = 0;
-      if (reader) {
-        try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            bytes += value.byteLength;
-            if (bytes > this.cfg.maxResponseBytes) {
-              controller.abort();
-              throw new InvoiceNinjaError("Invoice Ninja response is too large.", 0);
-            }
-            chunks.push(value);
-          }
-        } finally {
-          reader.releaseLock();
-        }
+        // 422 carries which field Invoice Ninja rejected; the model needs that to correct its input.
+        throw new InvoiceNinjaError(`Invoice Ninja API returned HTTP ${res.status}.`, res.status, upstreamDetails(buf));
       }
       try {
-        return (bytes ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : null) as T;
+        return (buf.length ? JSON.parse(buf.toString("utf8")) : null) as T;
       } catch {
         throw new InvoiceNinjaError("Invoice Ninja returned invalid JSON.", 0);
       }
@@ -98,6 +116,34 @@ export class InvoiceNinjaClient {
     } finally {
       clearTimeout(timer); // Includes response-body consumption, not just response headers.
     }
+  }
+
+  /** The whole body, or an InvoiceNinjaError once it exceeds maxResponseBytes (the request is aborted). */
+  private async readBounded(res: Response, controller: AbortController): Promise<Buffer> {
+    if (Number(res.headers.get("content-length")) > this.cfg.maxResponseBytes) {
+      await res.body?.cancel();
+      throw new InvoiceNinjaError("Invoice Ninja response is too large.", 0);
+    }
+    const reader = res.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    if (reader) {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          bytes += value.byteLength;
+          if (bytes > this.cfg.maxResponseBytes) {
+            controller.abort();
+            throw new InvoiceNinjaError("Invoice Ninja response is too large.", 0);
+          }
+          chunks.push(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+    return Buffer.concat(chunks);
   }
 
   private async request<T = unknown>(
