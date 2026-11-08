@@ -20,6 +20,9 @@ if (requireRequestCredentials() && !BEARER) {
 }
 
 const httpServer = createHttpServer(createHandler({ bearer: BEARER }));
+httpServer.headersTimeout = 10_000;
+httpServer.requestTimeout = 30_000;
+httpServer.maxRequestsPerSocket = 100;
 
 httpServer.listen(PORT, HOST, () => {
   process.stderr.write(

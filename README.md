@@ -42,8 +42,9 @@ blog post [Automate invoicing with MCP: my Invoice Ninja server](https://halvic.
 List results are projected to key fields to keep model context lean; use the
 `in_get_*` tools for full records.
 
-`in_upload_document` is available only over local stdio with writes enabled. It reads files accessible
-to the local process. HTTP never exposes this tool, including when safe mode is off.
+`in_upload_document` is available only over local stdio with writes enabled and
+`INVOICE_NINJA_UPLOAD_DIR` set. It reads regular files inside that staging directory, with a size limit
+and checks for symlink escapes. HTTP never exposes this tool. Keep the staging directory under operator control.
 
 **Safe mode and a deny list.** `INVOICE_NINJA_SAFE_MODE=true` keeps writes on but leaves out
 `in_invoice_action`, `in_quote_action` and `in_create_payment`, and narrows `in_task_action` to
@@ -79,6 +80,9 @@ Note: starting/stopping/logging time are **writes**, so they require
 Get an API token in Invoice Ninja under **Settings → Account Management → Integrations → API Tokens**.
 `INVOICE_NINJA_URL` is the bare instance URL — do **not** append `/api/v1` (it's added for you).
 
+Use a maintained Node.js 22, 24 or 26 release. Environment variables must be exported or supplied by the MCP
+host or container; this server does not load `.env` automatically.
+
 The server is published on npm as
 [`@halviclabs/invoiceninja-mcp`](https://www.npmjs.com/package/@halviclabs/invoiceninja-mcp) (Node 22 or
 newer) and as a container image (below). Nothing has to be cloned or built.
@@ -103,7 +107,7 @@ newer) and as a container image (below). Nothing has to be cloned or built.
 }
 ```
 
-Pin a version (`"@halviclabs/invoiceninja-mcp@0.3.1"`) if updates should be deliberate.
+Pin a version (`"@halviclabs/invoiceninja-mcp@0.4.0"`) if updates should be deliberate.
 
 ### Claude Code
 
@@ -126,20 +130,24 @@ node --env-file=.env dist/index.js  # stdio — or point the host config at this
 ### Container
 
 ```bash
-docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_URL=https://invoicing.example.ch \
+docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+  --pids-limit=64 --memory=256m -p 127.0.0.1:8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_URL=https://invoicing.example.ch \
   -e INVOICE_NINJA_TOKEN=... -e INVOICE_NINJA_ALLOW_WRITES=true -e INVOICE_NINJA_SAFE_MODE=true \
-  -e MCP_BEARER_TOKEN=... ghcr.io/halviclabs/invoiceninja-mcp:0.3.1
+  -e MCP_BEARER_TOKEN=... ghcr.io/halviclabs/invoiceninja-mcp:0.4.0
 ```
 
 Released images are `ghcr.io/halviclabs/invoiceninja-mcp:<X.Y.Z>` (also `X.Y`, `X` and `latest`; pin the
 digest in production). Every push to `main` additionally publishes `:main` and `:sha-<commit>`. The image runs
-the HTTP transport as a non-root user with a read-only root filesystem and answers `/healthz`.
-`docker build -t invoiceninja-mcp .` builds it locally.
+the HTTP transport as a non-root user and answers `/healthz`; the runtime flags above make the root filesystem
+read-only, drop capabilities and cap processes and memory. The supplied `compose.yaml` applies the same
+restrictions and requires the bearer, URL and token (`docker compose up`). `docker build -t invoiceninja-mcp .`
+builds the image locally.
 
 ### Remote (streamable HTTP, self-hosted)
 
 ```bash
-MCP_BEARER_TOKEN="$(openssl rand -hex 32)" npx -y -p @halviclabs/invoiceninja-mcp invoiceninja-mcp-http
+MCP_ALLOWED_HOSTS="127.0.0.1,localhost,invoicing-mcp.example.ch" \
+  MCP_BEARER_TOKEN="$(openssl rand -hex 32)" npx -y -p @halviclabs/invoiceninja-mcp invoiceninja-mcp-http
 ```
 
 (or `npm run start:http` from a source checkout, with the `INVOICE_NINJA_*` variables set either way)
@@ -153,8 +161,10 @@ invoicing-mcp.example.ch {
 }
 ```
 
-Always set `MCP_BEARER_TOKEN` for remote exposure — clients send
-`Authorization: Bearer <token>`.
+HTTP refuses to start without `MCP_BEARER_TOKEN`; clients send `Authorization: Bearer <token>`.
+`MCP_ALLOWED_HOSTS` defaults to loopback names only. Add the public Host used by your proxy.
+Forwarded host headers do not override this check. Requests with an Origin header are refused unless
+it is in `MCP_ALLOWED_ORIGINS`. This allowlist does not enable browser CORS by itself.
 
 ### Credentials per request (several accounts, one server)
 
@@ -166,7 +176,7 @@ carries the token of the connection in use.
 
 | Header | Value |
 |---|---|
-| `X-Invoice-Ninja-Url` | Base URL; `https://`, or `http://` on `127.0.0.1`/`localhost`. No user name, password, query; `/api/v1` is dropped |
+| `X-Invoice-Ninja-Url` | HTTPS base URL matching `INVOICE_NINJA_ALLOWED_URLS`. No user name, password, query or fragment; `/api/v1` is dropped |
 | `X-Invoice-Ninja-Token` | API token |
 | `X-Invoice-Ninja-Safe-Mode` | `false` allows sending and settling; any other value keeps safe mode on |
 
@@ -175,7 +185,11 @@ To enable them, set `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`; `MCP_BEARE
 also be set and match. `INVOICE_NINJA_SAFE_MODE=true` in the environment is a floor a request
 cannot lower, and `INVOICE_NINJA_ALLOW_WRITES` still decides whether write tools exist at all.
 
-In request-credentials mode, both URL and token must be present on every request. The environment's
+In request-credentials mode, configure `INVOICE_NINJA_ALLOWED_URLS` with exact trusted base URLs
+(comma-separated, no wildcards). Unlisted origins, ports and base paths are refused. Use only
+operator-approved hosts and restrict deployment egress to those services. HTTP URLs, including
+loopback, require the separate `INVOICE_NINJA_ALLOW_HTTP=true` opt-in. Both URL and token must
+be present on every request. The environment's
 `INVOICE_NINJA_URL`, `INVOICE_NINJA_TOKEN` and `INVOICE_NINJA_SECRET` are not used. Instances requiring
 `X-Api-Secret` must use environment-credentials mode; there is no per-request API-secret header.
 The server refuses to start without `MCP_BEARER_TOKEN`, and a request missing either URL or token gets
@@ -184,14 +198,22 @@ The server refuses to start without `MCP_BEARER_TOKEN`, and a request missing ei
 nothing is sent to Invoice Ninja in either case. Tokens are never logged.
 
 ```bash
-docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_ALLOW_WRITES=true \
-  -e INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true -e MCP_BEARER_TOKEN=... \
-  ghcr.io/halviclabs/invoiceninja-mcp:0.3.1
+docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+  --pids-limit=64 --memory=256m -p 127.0.0.1:8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_ALLOW_WRITES=true \
+  -e INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true \
+  -e INVOICE_NINJA_ALLOWED_URLS=https://invoicing.example.ch -e MCP_BEARER_TOKEN=... \
+  ghcr.io/halviclabs/invoiceninja-mcp:0.4.0
 ```
 
 ## Safety model
 
-- Writes are **off by default**. Read-only is the safe baseline.
+- Writes are **off by default**. Record IDs are restricted to one validated path segment.
+- Outbound redirects are refused, and response deadlines cover the complete body. Upstream errors
+  return a sanitized status/message instead of raw response bodies.
+- HTTP bodies default to 256 KiB; JSON-RPC batches are refused. Input depth, strings, collections and
+  total elements are bounded. Defaults allow 16 concurrent calls and 120 requests per minute across
+  the process. Calls over capacity receive 429; oversized bodies receive 413. Use external rate
+  limiting when running multiple replicas.
 - Write tools carry `destructiveHint` annotations so the host can prompt before
   executing lifecycle actions.
 - Reminder: **updating a client requires resending the full `contacts` array**
@@ -207,19 +229,34 @@ are listed there and in the [changelog](CHANGELOG.md).
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `INVOICE_NINJA_URL` | — (required¹) | Instance base URL, no `/api/v1` |
+| `INVOICE_NINJA_URL` | — (required¹) | HTTPS instance base URL, no `/api/v1` |
 | `INVOICE_NINJA_TOKEN` | — (required¹) | Company API token |
 | `INVOICE_NINJA_SECRET` | — | Optional `X-Api-Secret`; environment credentials only |
 | `INVOICE_NINJA_ALLOW_WRITES` | `false` | Enable mutating tools |
 | `INVOICE_NINJA_SAFE_MODE` | `false` | With writes on, leave out sending, settling, cancelling, deleting and payments; a floor for requests |
 | `INVOICE_NINJA_DISABLED_TOOLS` | — | Tool names never registered, comma-separated |
 | `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS` | `false` | HTTP only: address and token only from request headers (needs `MCP_BEARER_TOKEN`) |
-| `INVOICE_NINJA_MAX_PER_PAGE` | `100` | Cap on rows per list call |
-| `INVOICE_NINJA_TIMEOUT_MS` | `30000` | Per-request timeout |
+| `INVOICE_NINJA_MAX_PER_PAGE` | `100` | Cap on rows per list call; maximum 1000 |
+| `INVOICE_NINJA_TIMEOUT_MS` | `30000` | Full outbound timeout, including response body; maximum 120000 |
+| `INVOICE_NINJA_MAX_RESPONSE_BYTES` | `2097152` | Response byte cap; maximum 16777216 |
+| `INVOICE_NINJA_ALLOW_HTTP` | `false` | Explicit opt-in for a trusted HTTP upstream |
+| `INVOICE_NINJA_ALLOWED_URLS` | — | Required in request-credentials mode; exact trusted base URLs |
+| `INVOICE_NINJA_UPLOAD_DIR` | — | Enables stdio uploads inside an operator-controlled staging directory |
+| `INVOICE_NINJA_MAX_UPLOAD_BYTES` | `10485760` | Local upload cap; maximum 20971520 |
+| `MCP_ALLOWED_HOSTS` | loopback names | Exact incoming Host names, optionally with ports |
+| `MCP_ALLOWED_ORIGINS` | none | Exact permitted browser origins |
+| `MCP_MAX_REQUEST_BYTES` | `262144` | HTTP body cap; maximum 1048576 |
+| `MCP_BODY_TIMEOUT_MS` | `10000` | Deadline for receiving a complete HTTP body; maximum 30000 |
+| `MCP_MAX_CONCURRENT_REQUESTS` | `16` | Process-wide active request cap; maximum 64 |
+| `MCP_RATE_LIMIT_PER_MINUTE` | `120` | Process-wide requests/minute; maximum 10000 |
 | `PORT` / `HOST` | `8787` / `127.0.0.1` | HTTP transport bind |
-| `MCP_BEARER_TOKEN` | — | Bearer auth for HTTP transport; required for request-credentials mode |
+| `MCP_BEARER_TOKEN` | — | Required for every HTTP server |
 
 ¹ Not with `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`, which requires both values in request headers instead.
+
+All numeric limits must be positive integers within their documented ceilings. Input strings are limited to 16384
+characters, collections to 1000 entries, nesting to 20 levels, and tool inputs to 10000 total elements. The security
+model is described in [SECURITY.md](SECURITY.md); the migration from 0.3.x is in the [changelog](CHANGELOG.md).
 
 ## Development
 
@@ -230,8 +267,8 @@ npm run dev:http      # HTTP transport, same
 npm test && npm run typecheck && npm run build
 ```
 
-CI (`.github/workflows/ci.yml`) runs a secrets scan, the type check, the tests on Node 22 and 24, `npm audit` and a
-smoke test of the container image on every push and pull request. Pushes to `main` publish the `:main` image.
+CI (`.github/workflows/ci.yml`) runs a secrets scan, the type check, the tests on Node 22, 24 and 26, `npm audit`
+and a smoke test of the container image on every push and pull request. Pushes to `main` publish the `:main` image.
 
 ### Releasing
 

@@ -55,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24]
+        node: [22, 24, 26]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,7 +67,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm test
       - run: npm run build
-      - run: npm audit --audit-level=high
+      - run: npm audit --audit-level=moderate
 
   docker:
     name: Image smoke test
@@ -98,7 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --network none --name "$SMOKE_NAME" \
-            -e INVOICE_NINJA_URL=http://127.0.0.1:9 \
+            -e INVOICE_NINJA_URL=https://invoiceninja.invalid \
             -e INVOICE_NINJA_TOKEN=ci \
             -e INVOICE_NINJA_ALLOW_WRITES=true \
             -e MCP_BEARER_TOKEN=ci-token \
@@ -132,7 +132,7 @@ jobs:
       branch: main
       smoke-command: |
         docker run -d --network none --name "$SMOKE_NAME" \
-          -e INVOICE_NINJA_URL=http://127.0.0.1:9 \
+          -e INVOICE_NINJA_URL=https://invoiceninja.invalid \
           -e INVOICE_NINJA_TOKEN=ci \
           -e INVOICE_NINJA_ALLOW_WRITES=true \
           -e MCP_BEARER_TOKEN=ci-token \

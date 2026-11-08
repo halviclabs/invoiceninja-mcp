@@ -1,17 +1,17 @@
-# syntax=docker/dockerfile:1
-# invoiceninja-mcp container image: the streamable-HTTP server on port 8787, as UID/GID 10001 with a read-only root
-# filesystem. ALVIREQ runs it as a sidecar next to each instance: the chart passes the bearer, and every request
-# carries the connection's Invoice Ninja credentials (INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS).
+# HTTP server as UID/GID 10001. Set --read-only at runtime (see compose.yaml).
 
-ARG NODE_IMAGE=node:24-trixie-slim
+ARG NODE_IMAGE=node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d
 
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
-COPY package.json package-lock.json tsconfig.json ./
-RUN npm ci --no-audit --no-fund
+COPY package.json package-lock.json tsconfig.json tsconfig.test.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY src ./src
-# World-readable regardless of the build host's umask: the runtime stage runs as UID 10001 on root-owned files.
-RUN npm run build && npm prune --omit=dev --no-audit --no-fund && chmod -R a+rX /app
+COPY test ./test
+# Tests run in the build; the chmod keeps the runtime files world-readable regardless of the build host's umask
+# (the runtime stage runs as UID 10001 on root-owned files).
+RUN npm run typecheck && npm test && npm run build && npm prune --omit=dev --ignore-scripts --no-audit --no-fund \
+ && chmod -R a+rX /app
 
 FROM ${NODE_IMAGE}
 WORKDIR /app

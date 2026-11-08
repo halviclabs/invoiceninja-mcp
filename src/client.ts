@@ -9,6 +9,7 @@
  * Reference: https://api-docs.invoicing.co
  */
 import type { Config } from "./config.js";
+import { InputError, pathSegment } from "./security.js";
 
 export interface ListOptions {
   perPage?: number;
@@ -27,7 +28,6 @@ export class InvoiceNinjaError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    readonly body: unknown,
   ) {
     super(message);
     this.name = "InvoiceNinjaError";
@@ -52,6 +52,54 @@ export class InvoiceNinjaClient {
     return h;
   }
 
+  private async send<T>(url: URL, method: string, body?: string | FormData, multipart = false): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.cfg.timeoutMs);
+    try {
+      const headers = this.headers();
+      if (multipart) delete headers["Content-Type"];
+      const res = await fetch(url, { method, headers, body, signal: controller.signal, redirect: "error" });
+      if (!res.ok) {
+        await res.body?.cancel();
+        throw new InvoiceNinjaError(`Invoice Ninja API returned HTTP ${res.status}.`, res.status);
+      }
+      if (Number(res.headers.get("content-length")) > this.cfg.maxResponseBytes) {
+        await res.body?.cancel();
+        throw new InvoiceNinjaError("Invoice Ninja response is too large.", 0);
+      }
+      const reader = res.body?.getReader();
+      const chunks: Uint8Array[] = [];
+      let bytes = 0;
+      if (reader) {
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            bytes += value.byteLength;
+            if (bytes > this.cfg.maxResponseBytes) {
+              controller.abort();
+              throw new InvoiceNinjaError("Invoice Ninja response is too large.", 0);
+            }
+            chunks.push(value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }
+      try {
+        return (bytes ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : null) as T;
+      } catch {
+        throw new InvoiceNinjaError("Invoice Ninja returned invalid JSON.", 0);
+      }
+    } catch (err) {
+      if (err instanceof InvoiceNinjaError) throw err;
+      // Never return an upstream body, URL, native error, or credentials to the model.
+      throw new InvoiceNinjaError(controller.signal.aborted ? "Invoice Ninja request timed out." : "Invoice Ninja network request failed.", 0);
+    } finally {
+      clearTimeout(timer); // Includes response-body consumption, not just response headers.
+    }
+  }
+
   private async request<T = unknown>(
     method: string,
     path: string,
@@ -64,45 +112,14 @@ export class InvoiceNinjaClient {
       }
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.cfg.timeoutMs);
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method,
-        headers: this.headers(),
-        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-        signal: controller.signal,
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new InvoiceNinjaError(`Network error calling ${method} ${path}: ${reason}`, 0, null);
-    }
-    clearTimeout(timer);
-
-    const text = await res.text();
-    let parsed: unknown = text;
-    try {
-      parsed = text ? JSON.parse(text) : null;
-    } catch {
-      /* leave as raw text — usually an HTML error page from a misrouted request */
-    }
-
-    if (!res.ok) {
-      const msg =
-        (parsed as { message?: string })?.message ||
-        `Invoice Ninja API ${res.status} on ${method} ${path}`;
-      throw new InvoiceNinjaError(msg, res.status, parsed);
-    }
-    return parsed as T;
+    return this.send<T>(url, method, opts.body !== undefined ? JSON.stringify(opts.body) : undefined);
   }
 
   // ---- Generic CRUD over any entity collection -----------------------------
 
   list<T = unknown>(entity: string, opts: ListOptions = {}): Promise<{ data: T[]; meta?: unknown }> {
     const perPage = Math.min(opts.perPage ?? 20, this.cfg.maxPerPage);
-    return this.request("GET", `/${entity}`, {
+    return this.request("GET", `/${pathSegment(entity)}`, {
       query: {
         per_page: perPage,
         page: opts.page,
@@ -115,15 +132,15 @@ export class InvoiceNinjaClient {
   }
 
   get<T = unknown>(entity: string, id: string, include?: string): Promise<{ data: T }> {
-    return this.request("GET", `/${entity}/${id}`, { query: { include } });
+    return this.request("GET", `/${pathSegment(entity)}/${pathSegment(id)}`, { query: { include } });
   }
 
   create<T = unknown>(entity: string, body: unknown): Promise<{ data: T }> {
-    return this.request("POST", `/${entity}`, { body });
+    return this.request("POST", `/${pathSegment(entity)}`, { body });
   }
 
   update<T = unknown>(entity: string, id: string, body: unknown): Promise<{ data: T }> {
-    return this.request("PUT", `/${entity}/${id}`, { body });
+    return this.request("PUT", `/${pathSegment(entity)}/${pathSegment(id)}`, { body });
   }
 
   /**
@@ -132,12 +149,13 @@ export class InvoiceNinjaClient {
    * have no such route and must use bulk() for archive/restore/delete.
    */
   action<T = unknown>(entity: string, id: string, action: string): Promise<{ data: T }> {
-    return this.request("GET", `/${entity}/${id}/${action}`);
+    return this.request("GET", `/${pathSegment(entity)}/${pathSegment(id)}/${pathSegment(action)}`);
   }
 
   /** Bulk action endpoint, e.g. POST /invoices/bulk { action, ids: [...] }. */
   bulk<T = unknown>(entity: string, action: string, ids: string[]): Promise<{ data: T }> {
-    return this.request("POST", `/${entity}/bulk`, { body: { action, ids } });
+    ids.forEach(pathSegment);
+    return this.request("POST", `/${pathSegment(entity)}/bulk`, { body: { action: pathSegment(action), ids } });
   }
 
   /**
@@ -151,34 +169,43 @@ export class InvoiceNinjaClient {
     filePath: string,
     fileName?: string,
   ): Promise<{ data: T }> {
-    const { readFile } = await import("node:fs/promises");
-    const { basename } = await import("node:path");
-    const buf = await readFile(filePath);
+    const url = new URL(`${this.api}/${pathSegment(entity)}/${pathSegment(id)}/upload`);
+    if (!this.cfg.uploadDir) throw new InputError("Local uploads require INVOICE_NINJA_UPLOAD_DIR.");
+    if (fileName !== undefined && (!fileName || fileName.length > 255 || /[\\/\x00-\x1f\x7f]/.test(fileName))) {
+      throw new InputError("Invalid upload file name.");
+    }
+    const { realpath, open } = await import("node:fs/promises");
+    const { constants } = await import("node:fs");
+    const { basename, resolve, relative, isAbsolute, sep } = await import("node:path");
+    let buf: Buffer;
+    try {
+      const root = await realpath(this.cfg.uploadDir);
+      const target = await realpath(resolve(root, filePath));
+      const inside = relative(root, target);
+      if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw new InputError("File is outside the upload directory.");
+      const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const stat = await file.stat();
+        if (!stat.isFile() || stat.size > this.cfg.maxUploadBytes) throw new InputError("Upload must be a regular file within the upload size limit.");
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        for await (const chunk of file.createReadStream({ autoClose: false })) {
+          bytes += chunk.length;
+          if (bytes > this.cfg.maxUploadBytes) throw new InputError("Upload is too large.");
+          chunks.push(chunk);
+        }
+        buf = Buffer.concat(chunks);
+      } finally {
+        await file.close();
+      }
+    } catch (err) {
+      if (err instanceof InputError) throw err;
+      throw new InputError("Unable to read a regular file from the upload directory.");
+    }
     const form = new FormData();
     form.append("_method", "PUT");
     form.append("documents[]", new Blob([new Uint8Array(buf)]), fileName ?? basename(filePath));
-    const url = new URL(`${this.api}/${entity}/${id}/upload`);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "X-API-TOKEN": this.cfg.token,
-        "X-Requested-With": "XMLHttpRequest",
-        ...(this.cfg.secret ? { "X-Api-Secret": this.cfg.secret } : {}),
-      },
-      body: form,
-      signal: AbortSignal.timeout(this.cfg.timeoutMs),
-    });
-    const text = await res.text();
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = text;
-    }
-    if (!res.ok) {
-      throw new InvoiceNinjaError(`Upload to ${entity}/${id} failed (${res.status})`, res.status, parsed);
-    }
-    return parsed as { data: T };
+    return this.send<{ data: T }>(url, "POST", form, true);
   }
 
   /** Health probe — hits a cheap, always-present route. */

@@ -40,7 +40,7 @@ after(async () => {
 });
 
 async function mcpServer(opts: { bearer?: string; env: NodeJS.ProcessEnv }): Promise<string> {
-  const s = createServer(createHandler({ bearer: opts.bearer, env: opts.env }));
+  const s = createServer(createHandler({ bearer: opts.bearer, env: { INVOICE_NINJA_ALLOW_HTTP: "true", INVOICE_NINJA_ALLOWED_URLS: ninjaUrl, ...opts.env } }));
   await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
   servers.push(s);
   return `http://127.0.0.1:${(s.address() as AddressInfo).port}/mcp`;
@@ -121,11 +121,8 @@ test("credential headers without the bearer are refused", async () => {
   assert.equal(res.status, 401);
 });
 
-test("an open endpoint ignores credential headers", async () => {
-  const endpoint = await mcpServer({ env: { INVOICE_NINJA_URL: ninjaUrl, INVOICE_NINJA_TOKEN: "token-env" } });
-  const c = await connect(endpoint, { "X-Invoice-Ninja-Url": ninjaUrl, "X-Invoice-Ninja-Token": "token-a" });
-  assert.equal(JSON.parse((await pingText(c)).text).company.name, "Env Company");
-  await c.close();
+test("HTTP refuses to start without a bearer", () => {
+  assert.throws(() => createHandler({ env: {} }), /needs MCP_BEARER_TOKEN/);
 });
 
 test("the safe-mode header follows the connection's choice; the environment's safe mode is a floor", async () => {

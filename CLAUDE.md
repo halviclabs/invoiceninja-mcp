@@ -4,20 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A standalone MCP (Model Context Protocol) server that exposes a self-hosted **Invoice Ninja v5** instance to MCP hosts (Claude Desktop, Claude Code). It talks only to the operator's own Invoice Ninja instance via its REST API — no third-party SaaS bridge. TypeScript, ESM, Node ≥18, no runtime deps beyond `@modelcontextprotocol/sdk` and `zod`.
+A standalone MCP (Model Context Protocol) server that exposes a self-hosted **Invoice Ninja v5** instance to MCP hosts (Claude Desktop, Claude Code). It talks only to the operator's own Invoice Ninja instance via its REST API — no third-party SaaS bridge. TypeScript, ESM, Node 22, 24 or 26, no runtime deps beyond `@modelcontextprotocol/sdk` and `zod`.
 
 ## Commands
 
 ```bash
 npm run build        # tsc → dist/
-npm run typecheck    # tsc --noEmit (use this to check work; there is no test suite)
+npm run typecheck    # typecheck source and tests
 npm run dev          # tsx src/index.ts  — stdio transport, no build step
 npm run dev:http     # tsx src/http.ts   — HTTP transport, no build step
 npm start            # node dist/index.js (stdio, requires build)
 npm run start:http   # node dist/http.js (HTTP, requires build)
 ```
 
-There are no tests, linter, or formatter configured. `npm run typecheck` is the only verification gate — run it after changes.
+Run `npm test`, `npm run typecheck` and `npm run build` after changes. Security regression tests cover both transports; CI audits dependencies and gates image publication.
 
 Required env to run: `INVOICE_NINJA_URL` and `INVOICE_NINJA_TOKEN` (see `.env.example`). `Dockerfile` builds the HTTP server image. `.github/workflows/ci.yml` runs on every push and PR (gitleaks, typecheck, tests, image smoke test via `scripts/ci/mcp-smoke.mjs`) and publishes `:main`/`:sha-*` to GHCR; `.github/workflows/release.yml` releases a `vX.Y.Z` tag (must match `package.json`, `SERVER_VERSION` and a `CHANGELOG.md` section) to npm (`@halviclabs/invoiceninja-mcp`, trusted publishing) and GHCR (plus an optional private mirror) and creates the GitHub Release. Both call the reusable `.github/workflows/image.yml`. Note: nothing in the code loads a `.env` file automatically — env vars must be set in the shell, via the MCP host config, or with `node --env-file=.env`.
 
@@ -31,13 +31,13 @@ Layered, single-responsibility modules under `src/`:
 - **`tools.ts`** — `registerTools(server, cfg)`. The heart of the project: defines every MCP tool, its zod `inputSchema`, and its handler. This is where you add or change tools.
 - **`server.ts`** — `createServer()` wires config + tools into an `McpServer`. Shared by both transports.
 - **`index.ts`** — stdio transport entry (Claude Desktop / Code).
-- **`http.ts`** — streamable-HTTP transport entry (remote/self-hosted), stateless (fresh server+transport per POST), optional `MCP_BEARER_TOKEN` auth, `/healthz` probe.
+- **`http.ts`** — streamable-HTTP transport entry (remote/self-hosted), stateless (fresh server+transport per POST), mandatory `MCP_BEARER_TOKEN` auth, `/healthz` probe.
 
-Both entry points call the same `createServer()`; transport is the only difference.
+Both entry points call `createServer()`. HTTP never registers local uploads. Stdio uploads require a configured staging directory. HTTP also enforces bearer, Host/Origin, request budgets, rate and concurrency limits. See SECURITY.md for the full policy.
 
 ## Key conventions (follow these when editing `tools.ts`)
 
-- **Deny list and safe mode:** every tool goes through the local `register` wrapper, which skips names in `cfg.disabledTools` (`INVOICE_NINJA_DISABLED_TOOLS`) and, with `cfg.safeMode` (`INVOICE_NINJA_SAFE_MODE`), the `SAFE_MODE_DISABLED` set (`in_invoice_action`, `in_quote_action`, `in_create_payment`); safe mode also narrows `in_task_action` to archive/restore. Register new tools with `register(...)`, never `server.registerTool(...)` directly. ALVIREQ runs the server with writes on and `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`: each request carries the connection's address, token and safe mode in `X-Invoice-Ninja-*` headers (`src/requestCredentials.ts`), read only behind the bearer in `src/httpApp.ts`; `loadConfig(env, overrides)` merges them, with the environment's safe mode as a floor. Never log a token; `npm test` covers the headers with a fake Invoice Ninja.
+- **Deny list and safe mode:** every tool goes through the local `register` wrapper, which skips names in `cfg.disabledTools` (`INVOICE_NINJA_DISABLED_TOOLS`) and, with `cfg.safeMode` (`INVOICE_NINJA_SAFE_MODE`), the `SAFE_MODE_DISABLED` set (`in_invoice_action`, `in_quote_action`, `in_create_payment`); safe mode also narrows `in_task_action` to archive/restore. Register new tools with `register(...)`, never `server.registerTool(...)` directly. ALVIREQ runs the server with writes on and `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`: each request carries the connection's address, token and safe mode in `X-Invoice-Ninja-*` headers (`src/requestCredentials.ts`), read only behind the bearer in `src/httpApp.ts`; `loadConfig(env, overrides)` requires both credentials and an exact `INVOICE_NINJA_ALLOWED_URLS` match; it never inherits environment secrets. The environment's safe mode is a floor. Never log a token; `npm test` covers the headers with a fake Invoice Ninja.
 - **Read vs write gating:** read tools register unconditionally. `registerTools` returns early (`if (!cfg.allowWrites) return`) before defining any write tool, so writes are physically absent unless `INVOICE_NINJA_ALLOW_WRITES=true`. Keep new write tools below that guard.
 - **Tool annotations:** read tools get `{ readOnlyHint: true }`. Writes get `WRITE` (`destructiveHint: false`) or `DESTRUCTIVE` (`destructiveHint: true`, for lifecycle/delete actions) so hosts can prompt before executing.
 - **List projection:** list handlers project rows down to a small `*_FIELDS` allowlist (`project()`) to keep model context lean. Full records come from the `in_get_*` tools. When adding a field to a list, add it to the relevant `*_FIELDS` constant.

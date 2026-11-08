@@ -1,9 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { loadConfig, type ConfigOverrides } from "./config.js";
 import { registerTools } from "./tools.js";
+import { MAX_INPUT_ELEMENTS } from "./security.js";
 
 export const SERVER_NAME = "invoiceninja-mcp";
-export const SERVER_VERSION = "0.3.1";
+export const SERVER_VERSION = "0.4.0";
 
 /**
  * Build a fully-wired McpServer instance from the environment, with a request's overrides on top (HTTP transport).
@@ -16,10 +17,11 @@ export function createServer(
 ): McpServer {
   const cfg = loadConfig(env, overrides);
   // Remote callers must never gain access to files on the server through this tool.
-  if (transport === "http" && cfg.allowWrites) cfg.disabledTools.add("in_upload_document");
+  if (cfg.allowWrites && (transport === "http" || !cfg.uploadDir)) cfg.disabledTools.add("in_upload_document");
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
+      maxToolInputElements: MAX_INPUT_ELEMENTS,
       instructions:
         "Tools for an Invoice Ninja (v5) instance. Read tools (in_list_*, in_get_*, " +
         "in_ping, in_outstanding_summary) are always available. Write tools (in_create_*, " +

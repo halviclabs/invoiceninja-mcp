@@ -121,7 +121,7 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       smoke-command: |
         docker run -d --network none --name "$SMOKE_NAME" \
-          -e INVOICE_NINJA_URL=http://127.0.0.1:9 \
+          -e INVOICE_NINJA_URL=https://invoiceninja.invalid \
           -e INVOICE_NINJA_TOKEN=ci \
           -e INVOICE_NINJA_ALLOW_WRITES=true \
           -e MCP_BEARER_TOKEN=ci-token \
@@ -143,7 +143,7 @@ jobs:
       floating: false
       smoke-command: |
         docker run -d --network none --name "$SMOKE_NAME" \
-          -e INVOICE_NINJA_URL=http://127.0.0.1:9 \
+          -e INVOICE_NINJA_URL=https://invoiceninja.invalid \
           -e INVOICE_NINJA_TOKEN=ci \
           -e INVOICE_NINJA_ALLOW_WRITES=true \
           -e MCP_BEARER_TOKEN=ci-token \

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ConfigError, checkRequestUrl, loadConfig } from "../src/config.js";
 
-const ENV = { INVOICE_NINJA_URL: "https://env.example.ch/", INVOICE_NINJA_TOKEN: "env-token" };
+const ENV = { INVOICE_NINJA_URL: "https://env.example.ch/", INVOICE_NINJA_TOKEN: "env-token", INVOICE_NINJA_ALLOWED_URLS: "https://a.example.ch,https://b.ch,https://other.example.ch" };
 
 test("environment only, as before", () => {
   const cfg = loadConfig(ENV);
@@ -26,7 +26,7 @@ test("with the request flag the environment's address and token are not used", (
   const env = { ...ENV, INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS: "true" };
   assert.throws(() => loadConfig(env), (e: unknown) => e instanceof ConfigError && e.code === "missing_credentials");
   assert.throws(() => loadConfig(env, { token: "only-token" }), /both are required/);
-  const cfg = loadConfig({ INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS: "1" }, { baseUrl: "https://b.ch", token: "b" });
+  const cfg = loadConfig({ INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS: "1", INVOICE_NINJA_ALLOWED_URLS: "https://b.ch" }, { baseUrl: "https://b.ch", token: "b" });
   assert.equal(cfg.baseUrl, "https://b.ch");
   assert.equal(cfg.token, "b");
 });
@@ -58,8 +58,8 @@ test("request address rules", () => {
   assert.equal(checkRequestUrl("https://invoicing.co"), "https://invoicing.co");
   assert.equal(checkRequestUrl(" https://in.example.ch/api/v1/ "), "https://in.example.ch");
   assert.equal(checkRequestUrl("https://example.ch/billing/api/v1"), "https://example.ch/billing");
-  assert.equal(checkRequestUrl("http://127.0.0.1:9000"), "http://127.0.0.1:9000");
-  assert.equal(checkRequestUrl("http://localhost:9000/"), "http://localhost:9000");
+  assert.equal(checkRequestUrl("http://127.0.0.1:9000", true), "http://127.0.0.1:9000");
+  assert.equal(checkRequestUrl("http://localhost:9000/", true), "http://localhost:9000");
   const invalid = (raw: string) =>
     assert.throws(() => checkRequestUrl(raw), (e: unknown) => e instanceof ConfigError && e.code === "invalid_url", raw);
   invalid("http://invoicing.co");
