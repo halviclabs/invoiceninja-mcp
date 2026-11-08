@@ -10,6 +10,8 @@ name: Release
 on:
   push:
     tags: ['v*.*.*']
+  # Re-run a release from its tag (gh workflow run release.yml --ref vX.Y.Z); nothing already published is redone.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,6 +23,7 @@ concurrency:
 jobs:
   version:
     name: Check the tag
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -56,6 +59,11 @@ jobs:
   checks:
     name: CI
     needs: version
+    # ci.yml's publish job (skipped on a tag) declares packages: write; a called workflow may not request more than
+    # the caller grants, so the grant is needed here for the workflow to validate.
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/ci.yml
 
   # Trusted publishing: npmjs.com → package → Settings → Trusted publisher → GitHub Actions, this repository,
@@ -144,7 +152,7 @@ jobs:
           node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
           < "$SMOKE_TOOLS/scripts/ci/mcp-smoke.mjs"
     secrets:
-      registry-username: ${{ secrets.RELEASE_MIRROR_USERNAME }}
+      registry-user: ${{ secrets.RELEASE_MIRROR_USERNAME }}
       registry-password: ${{ secrets.RELEASE_MIRROR_PASSWORD }}
 
   release:
