@@ -22,6 +22,10 @@ Security release. Users of 0.3.0 who run the HTTP transport should update.
 
 Both reported by Romain Valtier, [TETRA](https://tetra-ai.com). Thank you.
 
+- Dependencies updated within their ranges to clear all open advisories: `@modelcontextprotocol/sdk` 1.32.2
+  (from 1.29.0), `zod` 4.6.7 (from 4.4.3) and their transitives (`hono`, `@hono/node-server`, `express`,
+  `body-parser`, `qs`, `fast-uri`, `ip-address`). `npm audit` is clean; CI now fails on a high-severity advisory.
+
 ### Fixed
 
 - The container image is readable by its non-root user regardless of the build host's umask (a host with
