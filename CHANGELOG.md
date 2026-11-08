@@ -22,9 +22,10 @@ Security release. Users of 0.3.0 who run the HTTP transport should update.
 
 Both reported by Romain Valtier, [TETRA](https://tetra-ai.com). Thank you.
 
-- Dependencies updated within their ranges to clear all open advisories: `@modelcontextprotocol/sdk` 1.32.2
-  (from 1.29.0), `zod` 4.6.7 (from 4.4.3) and their transitives (`hono`, `@hono/node-server`, `express`,
-  `body-parser`, `qs`, `fast-uri`, `ip-address`). `npm audit` is clean; CI now fails on a high-severity advisory.
+- Dependencies updated to clear all open advisories: `@modelcontextprotocol/sdk` ^1.32.2 (from ^1.29.0), `zod`
+  ^4.6.7 (from ^4.4.3) and their transitives (`hono`, `@hono/node-server`, `express`, `body-parser`, `qs`,
+  `fast-uri`, `ip-address`). Supersedes Dependabot PRs #5–#10. `npm audit` is clean; CI now fails on a
+  high-severity advisory.
 
 ### Fixed
 
