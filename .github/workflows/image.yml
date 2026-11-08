@@ -78,7 +78,7 @@ on:
         type: boolean
         default: false
     secrets:
-      registry-username:
+      registry-user:
         description: Registry user when it is a secret (private registry robot account). Overrides the input.
         required: false
       registry-password:
@@ -224,7 +224,7 @@ jobs:
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ steps.registry.outputs.host }}
-          username: ${{ secrets.registry-username || inputs.registry-username }}
+          username: ${{ secrets.registry-user || inputs.registry-username }}
           password: ${{ secrets.registry-password || github.token }}
 
       - name: Refuse a version that is already published
