@@ -76,15 +76,12 @@ Note: starting/stopping/logging time are **writes**, so they require
 
 ## Setup
 
-```bash
-npm install
-cp .env.example .env     # fill in INVOICE_NINJA_URL + INVOICE_NINJA_TOKEN
-npm run build
-```
+Get an API token in Invoice Ninja under **Settings → Account Management → Integrations → API Tokens**.
+`INVOICE_NINJA_URL` is the bare instance URL — do **not** append `/api/v1` (it's added for you).
 
-Get the token in Invoice Ninja under **Settings → Account Management →
-Integrations → API Tokens**. `INVOICE_NINJA_URL` is the bare instance URL — do
-**not** append `/api/v1` (it's added for you).
+The server is published on npm as
+[`@halviclabs/invoiceninja-mcp`](https://www.npmjs.com/package/@halviclabs/invoiceninja-mcp) (Node 22 or
+newer) and as a container image (below). Nothing has to be cloned or built.
 
 ### Claude Desktop (stdio)
 
@@ -94,8 +91,8 @@ Integrations → API Tokens**. `INVOICE_NINJA_URL` is the bare instance URL — 
 {
   "mcpServers": {
     "invoiceninja": {
-      "command": "node",
-      "args": ["/abs/path/to/invoiceninja-mcp/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@halviclabs/invoiceninja-mcp"],
       "env": {
         "INVOICE_NINJA_URL": "https://invoicing.example.ch",
         "INVOICE_NINJA_TOKEN": "your-company-token",
@@ -106,13 +103,25 @@ Integrations → API Tokens**. `INVOICE_NINJA_URL` is the bare instance URL — 
 }
 ```
 
+Pin a version (`"@halviclabs/invoiceninja-mcp@0.3.1"`) if updates should be deliberate.
+
 ### Claude Code
 
 ```bash
-claude mcp add invoiceninja -- node /abs/path/to/invoiceninja-mcp/dist/index.js
+claude mcp add invoiceninja \
+  -e INVOICE_NINJA_URL=https://invoicing.example.ch \
+  -e INVOICE_NINJA_TOKEN=your-company-token \
+  -- npx -y @halviclabs/invoiceninja-mcp
 ```
 
-(set the env vars in the shell or via `--env` flags)
+### From source
+
+```bash
+git clone https://github.com/halviclabs/invoiceninja-mcp.git && cd invoiceninja-mcp
+npm ci && npm run build
+cp .env.example .env                # fill in INVOICE_NINJA_URL + INVOICE_NINJA_TOKEN
+node --env-file=.env dist/index.js  # stdio — or point the host config at this file
+```
 
 ### Container
 
@@ -124,19 +133,16 @@ docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_URL=https://invoic
 
 Released images are `ghcr.io/halviclabs/invoiceninja-mcp:<X.Y.Z>` (also `X.Y`, `X` and `latest`; pin the
 digest in production). Every push to `main` additionally publishes `:main` and `:sha-<commit>`. The image runs
-`node dist/http.js` as a non-root user with a read-only root filesystem and answers `/healthz`.
+the HTTP transport as a non-root user with a read-only root filesystem and answers `/healthz`.
 `docker build -t invoiceninja-mcp .` builds it locally.
-
-Releasing: bump `version` in `package.json` and `SERVER_VERSION` in `src/server.ts`, add the section to
-`CHANGELOG.md`, and push a tag `vX.Y.Z`. `.github/workflows/release.yml` checks that the three agree, runs CI,
-builds and smoke-tests the image, pushes it to GHCR (and to a private mirror when the repository variable
-`RELEASE_MIRROR_IMAGE` is set), and creates the GitHub Release from the changelog section.
 
 ### Remote (streamable HTTP, self-hosted)
 
 ```bash
-MCP_BEARER_TOKEN="$(openssl rand -hex 32)" npm run start:http
+MCP_BEARER_TOKEN="$(openssl rand -hex 32)" npx -y -p @halviclabs/invoiceninja-mcp invoiceninja-mcp-http
 ```
+
+(or `npm run start:http` from a source checkout, with the `INVOICE_NINJA_*` variables set either way)
 
 Listens on `127.0.0.1:8787/mcp` with `/healthz` for probes. Terminate TLS at your
 proxy. Caddy example:
@@ -179,7 +185,8 @@ nothing is sent to Invoice Ninja in either case. Tokens are never logged.
 
 ```bash
 docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_ALLOW_WRITES=true \
-  -e INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true -e MCP_BEARER_TOKEN=... invoiceninja-mcp
+  -e INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true -e MCP_BEARER_TOKEN=... \
+  ghcr.io/halviclabs/invoiceninja-mcp:0.3.1
 ```
 
 ## Safety model
@@ -213,6 +220,25 @@ are listed there and in the [changelog](CHANGELOG.md).
 | `MCP_BEARER_TOKEN` | — | Bearer auth for HTTP transport; required for request-credentials mode |
 
 ¹ Not with `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`, which requires both values in request headers instead.
+
+## Development
+
+```bash
+npm ci
+npm run dev           # stdio transport straight from the sources (tsx), no build step
+npm run dev:http      # HTTP transport, same
+npm test && npm run typecheck && npm run build
+```
+
+CI (`.github/workflows/ci.yml`) runs a secrets scan, the type check, the tests on Node 22 and 24, `npm audit` and a
+smoke test of the container image on every push and pull request. Pushes to `main` publish the `:main` image.
+
+### Releasing
+
+Bump `version` in `package.json` and `SERVER_VERSION` in `src/server.ts`, add the section to `CHANGELOG.md`, and
+push a tag `vX.Y.Z`. `.github/workflows/release.yml` checks that the three agree, runs CI, publishes the npm package
+with provenance, builds and smoke-tests the image, pushes it to GHCR (and to a private mirror when the repository
+variable `RELEASE_MIRROR_IMAGE` is set), and creates the GitHub Release from the changelog section.
 
 ## Alternative: bake it into Laravel
 

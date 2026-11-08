@@ -58,6 +58,45 @@ jobs:
     needs: version
     uses: ./.github/workflows/ci.yml
 
+  # Trusted publishing: npmjs.com → package → Settings → Trusted publisher → GitHub Actions, this repository,
+  # workflow "release.yml". No token is stored; the job's OIDC identity is the credential. The first version of a
+  # package is published by hand (the trusted publisher is configured on an existing package), so a version that is
+  # already on the registry is skipped rather than failed.
+  npm:
+    name: npm
+    needs: [version, checks]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: npm 11.5.1 or newer (trusted publishing)
+        run: npm install -g npm@latest && npm --version
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Publish unless this version is already on npm
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          if npm view "$name@$VERSION" version > /dev/null 2>&1; then
+            echo "::notice::$name@$VERSION is already published; skipping."
+            exit 0
+          fi
+          flags=(--provenance --access public)
+          [ "$PRERELEASE" = "true" ] && flags+=(--tag next)
+          npm publish "${flags[@]}"
+
   ghcr:
     name: GHCR
     needs: [version, checks]
@@ -110,9 +149,9 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [version, ghcr, mirror]
+    needs: [version, npm, ghcr, mirror]
     # The mirror job may be skipped; a failed one still blocks the release.
-    if: ${{ !cancelled() && needs.ghcr.result == 'success' && (needs.mirror.result == 'success' || needs.mirror.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.npm.result == 'success' && needs.ghcr.result == 'success' && (needs.mirror.result == 'success' || needs.mirror.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -136,7 +175,9 @@ jobs:
           ' CHANGELOG.md | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > notes.md
           {
             echo
-            echo "## Images"
+            echo "## Packages"
+            echo
+            echo "npm: \`npx -y @halviclabs/invoiceninja-mcp@$VERSION\`"
             echo
             echo "GHCR (digest \`$GHCR_DIGEST\`):"
             echo

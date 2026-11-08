@@ -32,14 +32,22 @@ Both reported by Romain Valtier, [TETRA](https://tetra-ai.com). Thank you.
 - The container image is readable by its non-root user regardless of the build host's umask (a host with
   `umask 077` produced an image whose `package.json` the server could not open).
 
+### Changed
+
+- The package is `@halviclabs/invoiceninja-mcp` on npm, so hosts run it with `npx -y @halviclabs/invoiceninja-mcp`
+  instead of a path to a local build. A second bin, `invoiceninja-mcp-http`, starts the HTTP transport.
+  Node 22 or newer is required (`engines`).
+
 ### Added
 
+- `LICENSE` (MIT; `package.json` already said so).
 - `SECURITY.md` with the private reporting channel, supported versions and scope.
 - CI on every push and pull request: secrets scan (gitleaks), type check, tests on Node 22 and 24, and a smoke
   test of the built image (`initialize` + `tools/list` over streamable HTTP). A push to `main` publishes
   `ghcr.io/halviclabs/invoiceninja-mcp:main` and `:sha-<commit>`.
-- Releases from a `vX.Y.Z` tag: the image goes to `ghcr.io/halviclabs/invoiceninja-mcp` (`X.Y.Z`, `X.Y`, `X`,
-  `latest`) and optionally to a private mirror, and a GitHub Release carries this changelog section.
+- Releases from a `vX.Y.Z` tag: the npm package is published with provenance, the image goes to
+  `ghcr.io/halviclabs/invoiceninja-mcp` (`X.Y.Z`, `X.Y`, `X`, `latest`) and optionally to a private mirror, and a
+  GitHub Release carries this changelog section.
 - Dependabot for npm, GitHub Actions and the Docker base image.
 
 ## [0.3.0] - 2026-11-04
