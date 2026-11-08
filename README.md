@@ -129,8 +129,8 @@ digest in production). Every push to `main` additionally publishes `:main` and `
 
 Releasing: bump `version` in `package.json` and `SERVER_VERSION` in `src/server.ts`, add the section to
 `CHANGELOG.md`, and push a tag `vX.Y.Z`. `.github/workflows/release.yml` checks that the three agree, runs CI,
-builds and smoke-tests the image, pushes it to GHCR and to Halvic's Harbor, and creates the GitHub Release
-from the changelog section.
+builds and smoke-tests the image, pushes it to GHCR (and to a private mirror when the repository variable
+`RELEASE_MIRROR_IMAGE` is set), and creates the GitHub Release from the changelog section.
 
 ### Remote (streamable HTTP, self-hosted)
 

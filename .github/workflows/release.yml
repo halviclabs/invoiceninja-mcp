@@ -1,7 +1,10 @@
 # A tag vX.Y.Z releases that version: the tag must match package.json, CI must pass, then the image is built,
-# smoke-tested and pushed to GHCR (X.Y.Z, X.Y, X, latest) and to Halvic's Harbor (X.Y.Z only, immutable; the
-# halviclabs cluster pulls from there), and a GitHub Release is created with the CHANGELOG section for the version.
-# Secrets: HARBOR_USERNAME and HARBOR_PASSWORD of a robot account limited to the Harbor project alvireq.
+# smoke-tested and pushed to GHCR (X.Y.Z, X.Y, X, latest), optionally mirrored to a second registry (X.Y.Z only),
+# and a GitHub Release is created with the CHANGELOG section for the version.
+#
+# Mirror (optional): set the repository variable RELEASE_MIRROR_IMAGE to the full image name without tag
+# (e.g. registry.example.com/project/invoiceninja-mcp) and the secrets RELEASE_MIRROR_USERNAME and
+# RELEASE_MIRROR_PASSWORD. Without the variable the mirror job is skipped.
 name: Release
 
 on:
@@ -80,13 +83,13 @@ jobs:
           node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
           < "$SMOKE_TOOLS/scripts/ci/mcp-smoke.mjs"
 
-  harbor:
-    name: Harbor
+  mirror:
+    name: Mirror registry
     needs: [version, checks]
+    if: vars.RELEASE_MIRROR_IMAGE != ''
     uses: ./.github/workflows/image.yml
     with:
-      image: harbor.halviclabs.ch/alvireq/invoiceninja-mcp
-      registry: harbor.halviclabs.ch
+      image: ${{ vars.RELEASE_MIRROR_IMAGE }}
       mode: release
       ref: ${{ github.ref_name }}
       version: ${{ needs.version.outputs.version }}
@@ -102,12 +105,14 @@ jobs:
           node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
           < "$SMOKE_TOOLS/scripts/ci/mcp-smoke.mjs"
     secrets:
-      registry-username: ${{ secrets.HARBOR_USERNAME }}
-      registry-password: ${{ secrets.HARBOR_PASSWORD }}
+      registry-username: ${{ secrets.RELEASE_MIRROR_USERNAME }}
+      registry-password: ${{ secrets.RELEASE_MIRROR_PASSWORD }}
 
   release:
     name: GitHub Release
-    needs: [version, ghcr, harbor]
+    needs: [version, ghcr, mirror]
+    # The mirror job may be skipped; a failed one still blocks the release.
+    if: ${{ !cancelled() && needs.ghcr.result == 'success' && (needs.mirror.result == 'success' || needs.mirror.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -121,8 +126,8 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
           GHCR_TAGS: ${{ needs.ghcr.outputs.tags }}
           GHCR_DIGEST: ${{ needs.ghcr.outputs.digest }}
-          HARBOR_TAGS: ${{ needs.harbor.outputs.tags }}
-          HARBOR_DIGEST: ${{ needs.harbor.outputs.digest }}
+          MIRROR_TAGS: ${{ needs.mirror.outputs.tags }}
+          MIRROR_DIGEST: ${{ needs.mirror.outputs.digest }}
         run: |
           set -euo pipefail
           awk -v v="$VERSION" '
@@ -136,10 +141,12 @@ jobs:
             echo "GHCR (digest \`$GHCR_DIGEST\`):"
             echo
             printf '%s\n' "$GHCR_TAGS" | sed 's/^/- `/; s/$/`/'
-            echo
-            echo "Harbor (digest \`$HARBOR_DIGEST\`):"
-            echo
-            printf '%s\n' "$HARBOR_TAGS" | sed 's/^/- `/; s/$/`/'
+            if [ -n "$MIRROR_TAGS" ]; then
+              echo
+              echo "Mirror (digest \`$MIRROR_DIGEST\`):"
+              echo
+              printf '%s\n' "$MIRROR_TAGS" | sed 's/^/- `/; s/$/`/'
+            fi
           } >> notes.md
           cat notes.md
 

@@ -38,7 +38,7 @@ Both reported by Romain Valtier, [TETRA](https://tetra-ai.com). Thank you.
   test of the built image (`initialize` + `tools/list` over streamable HTTP). A push to `main` publishes
   `ghcr.io/halviclabs/invoiceninja-mcp:main` and `:sha-<commit>`.
 - Releases from a `vX.Y.Z` tag: the image goes to `ghcr.io/halviclabs/invoiceninja-mcp` (`X.Y.Z`, `X.Y`, `X`,
-  `latest`) and to Harbor (`X.Y.Z`), and a GitHub Release carries this changelog section.
+  `latest`) and optionally to a private mirror, and a GitHub Release carries this changelog section.
 - Dependabot for npm, GitHub Actions and the Docker base image.
 
 ## [0.3.0] - 2026-11-04
@@ -60,7 +60,7 @@ Both reported by Romain Valtier, [TETRA](https://tetra-ai.com). Thank you.
 ### Added
 
 - Safe mode (`INVOICE_NINJA_SAFE_MODE`) and the tool deny list (`INVOICE_NINJA_DISABLED_TOOLS`).
-- Container image published to Harbor from a version tag.
+- Container image published to a private registry from a version tag.
 
 [0.3.1]: https://github.com/halviclabs/invoiceninja-mcp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/halviclabs/invoiceninja-mcp/compare/v0.2.1...v0.3.0

@@ -12,9 +12,8 @@ that credits the reporter, unless they prefer otherwise.
 
 ## Supported versions
 
-Only the latest release receives fixes. Images: `ghcr.io/halviclabs/invoiceninja-mcp:<X.Y.Z>` and
-`harbor.halviclabs.ch/alvireq/invoiceninja-mcp:<X.Y.Z>`; the npm package at the same version. Versions before
-0.3.1 have known issues (see the changelog) and should be updated.
+Only the latest release receives fixes: the image `ghcr.io/halviclabs/invoiceninja-mcp:<X.Y.Z>` and the npm
+package at the same version. Versions before 0.3.1 have known issues (see the changelog) and should be updated.
 
 ## Scope
 

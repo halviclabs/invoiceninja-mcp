@@ -5,7 +5,7 @@
 #   branch      <branch> and sha-<7>. Never latest. On GHCR, only the `sha-keep` newest sha-only versions are kept.
 #
 # Tags are computed from `version`/`branch`, not from the event ref, so a re-run on another ref builds the same names.
-# Callers: ci.yml (branch mode on every push to main) and release.yml (release mode for GHCR and Harbor).
+# Callers: ci.yml (branch mode on every push to main) and release.yml (release mode for GHCR and an optional mirror).
 #
 # Permissions: this workflow sets none and runs with the caller job's token. A GHCR push without `registry-password`
 # needs the caller to grant `contents: read` and `packages: write`.
@@ -24,11 +24,11 @@ on:
         type: string
         required: true
       registry:
-        description: Registry host for login, e.g. ghcr.io or harbor.halviclabs.ch (no namespace).
+        description: Registry host for login (no namespace). Empty derives it from the first segment of `image`.
         type: string
-        required: true
+        default: ""
       registry-username:
-        description: Registry user. GHCR takes github.actor; Harbor takes the robot account.
+        description: Registry user. GHCR takes github.actor; a private registry its robot account (or the secret).
         type: string
         default: nologin
       mode:
@@ -79,7 +79,7 @@ on:
         default: false
     secrets:
       registry-username:
-        description: Registry user when it is a secret (Harbor robot account). Overrides the input.
+        description: Registry user when it is a secret (private registry robot account). Overrides the input.
         required: false
       registry-password:
         description: Registry password or token. Empty falls back to github.token (GHCR).
@@ -212,11 +212,18 @@ jobs:
           docker image rm "$SMOKE_IMAGE" >/dev/null 2>&1 || true
           rm -rf "$SMOKE_TOOLS"
 
+      - name: Registry host
+        id: registry
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          IMAGE: ${{ inputs.image }}
+        run: echo "host=${REGISTRY:-${IMAGE%%/*}}" >> "$GITHUB_OUTPUT"
+
       - name: Log in to the registry
         if: ${{ !inputs.dry-run }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          registry: ${{ inputs.registry }}
+          registry: ${{ steps.registry.outputs.host }}
           username: ${{ secrets.registry-username || inputs.registry-username }}
           password: ${{ secrets.registry-password || github.token }}
 
@@ -250,7 +257,7 @@ jobs:
 
       # Every main push adds a sha- tag. A version carrying any other tag (main, latest, X.Y.Z...) is never touched.
       - name: Prune old sha- versions (GHCR)
-        if: ${{ !inputs.dry-run && inputs.mode == 'branch' && inputs.registry == 'ghcr.io' && inputs.sha-keep > 0 }}
+        if: ${{ !inputs.dry-run && inputs.mode == 'branch' && steps.registry.outputs.host == 'ghcr.io' && inputs.sha-keep > 0 }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

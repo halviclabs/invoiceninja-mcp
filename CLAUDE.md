@@ -19,7 +19,7 @@ npm run start:http   # node dist/http.js (HTTP, requires build)
 
 There are no tests, linter, or formatter configured. `npm run typecheck` is the only verification gate — run it after changes.
 
-Required env to run: `INVOICE_NINJA_URL` and `INVOICE_NINJA_TOKEN` (see `.env.example`). `Dockerfile` builds the HTTP server image. `.github/workflows/ci.yml` runs on every push and PR (gitleaks, typecheck, tests, image smoke test via `scripts/ci/mcp-smoke.mjs`) and publishes `:main`/`:sha-*` to GHCR; `.github/workflows/release.yml` releases a `vX.Y.Z` tag (must match `package.json`, `SERVER_VERSION` and a `CHANGELOG.md` section) to GHCR and Harbor and creates the GitHub Release. Both call the reusable `.github/workflows/image.yml`. Note: nothing in the code loads a `.env` file automatically — env vars must be set in the shell, via the MCP host config, or with `node --env-file=.env`.
+Required env to run: `INVOICE_NINJA_URL` and `INVOICE_NINJA_TOKEN` (see `.env.example`). `Dockerfile` builds the HTTP server image. `.github/workflows/ci.yml` runs on every push and PR (gitleaks, typecheck, tests, image smoke test via `scripts/ci/mcp-smoke.mjs`) and publishes `:main`/`:sha-*` to GHCR; `.github/workflows/release.yml` releases a `vX.Y.Z` tag (must match `package.json`, `SERVER_VERSION` and a `CHANGELOG.md` section) to GHCR (plus an optional private mirror) and creates the GitHub Release. Both call the reusable `.github/workflows/image.yml`. Note: nothing in the code loads a `.env` file automatically — env vars must be set in the shell, via the MCP host config, or with `node --env-file=.env`.
 
 ## Architecture
 
