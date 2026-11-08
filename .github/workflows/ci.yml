@@ -1,0 +1,142 @@
+# Checks for every push to main and every pull request: secrets scan, type check, tests on the supported Node
+# versions, and a smoke test of the real container image. A push to main that passes also publishes the image as
+# ghcr.io/halviclabs/invoiceninja-mcp:main and :sha-<7> (never :latest). Version tags go through release.yml, which
+# calls this workflow first.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks
+        env:
+          VERSION: 8.30.1
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan the full history
+        run: gitleaks detect --no-banner --redact --verbose
+
+  lint:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --audit-level=high
+
+  docker:
+    name: Image smoke test
+    needs: [secrets, lint, test]
+    runs-on: ubuntu-latest
+    env:
+      SMOKE_NAME: smoke-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: mcp-smoke:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The real image through its entrypoint and transport: initialize + tools/list over streamable HTTP.
+      # Dummy credentials, --network none: neither call reaches Invoice Ninja. The script is piped on stdin.
+      - name: Smoke test (initialize + tools/list)
+        run: |
+          set -euo pipefail
+          docker run -d --network none --name "$SMOKE_NAME" \
+            -e INVOICE_NINJA_URL=http://127.0.0.1:9 \
+            -e INVOICE_NINJA_TOKEN=ci \
+            -e INVOICE_NINJA_ALLOW_WRITES=true \
+            -e MCP_BEARER_TOKEN=ci-token \
+            mcp-smoke:ci
+          docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine \
+            node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
+            < scripts/ci/mcp-smoke.mjs
+        timeout-minutes: 3
+
+      - name: Smoke test logs and cleanup
+        if: always()
+        run: |
+          docker logs --tail 50 "$SMOKE_NAME" 2>&1 || true
+          docker rm -f "$SMOKE_NAME" >/dev/null 2>&1 || true
+
+  # Every push to main publishes :main and :sha-<7>; deployments that track main pin the digest.
+  publish:
+    name: Publish main image
+    needs: [secrets, lint, test, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image.yml
+    with:
+      image: ghcr.io/halviclabs/invoiceninja-mcp
+      registry: ghcr.io
+      registry-username: ${{ github.actor }}
+      mode: branch
+      ref: ${{ github.sha }}
+      branch: main
+      smoke-command: |
+        docker run -d --network none --name "$SMOKE_NAME" \
+          -e INVOICE_NINJA_URL=http://127.0.0.1:9 \
+          -e INVOICE_NINJA_TOKEN=ci \
+          -e INVOICE_NINJA_ALLOW_WRITES=true \
+          -e MCP_BEARER_TOKEN=ci-token \
+          "$SMOKE_IMAGE"
+        docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine \
+          node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
+          < "$SMOKE_TOOLS/scripts/ci/mcp-smoke.mjs"

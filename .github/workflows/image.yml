@@ -1,0 +1,285 @@
+# Reusable image build: build once, smoke test, and only then push. A failing smoke test pushes nothing.
+#
+# Tag convention:
+#   release     X.Y.Z, and with `floating` also X.Y, X and latest. A prerelease (version with '-') gets X.Y.Z only.
+#   branch      <branch> and sha-<7>. Never latest. On GHCR, only the `sha-keep` newest sha-only versions are kept.
+#
+# Tags are computed from `version`/`branch`, not from the event ref, so a re-run on another ref builds the same names.
+# Callers: ci.yml (branch mode on every push to main) and release.yml (release mode for GHCR and an optional mirror).
+#
+# Permissions: this workflow sets none and runs with the caller job's token. A GHCR push without `registry-password`
+# needs the caller to grant `contents: read` and `packages: write`.
+#
+# The smoke command runs in bash (-euo pipefail) with:
+#   SMOKE_IMAGE   the locally built image (not pushed)
+#   SMOKE_NAME    a unique container name; removed afterwards whatever happens
+#   SMOKE_TOOLS   a checkout of `smoke-tools-path` at the caller's github.sha
+name: Image
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Full image name without tag, e.g. ghcr.io/halviclabs/invoiceninja-mcp.
+        type: string
+        required: true
+      registry:
+        description: Registry host for login (no namespace). Empty derives it from the first segment of `image`.
+        type: string
+        default: ""
+      registry-username:
+        description: Registry user. GHCR takes github.actor; a private registry its robot account (or the secret).
+        type: string
+        default: nologin
+      mode:
+        description: "'release' (version tags) or 'branch' (branch and sha- tags)."
+        type: string
+        required: true
+      ref:
+        description: Commit, branch or tag to build.
+        type: string
+        required: true
+      version:
+        description: Release version without the leading v (mode release).
+        type: string
+        default: ""
+      branch:
+        description: Branch name (mode branch).
+        type: string
+        default: ""
+      floating:
+        description: Also move X.Y, X and latest. Set false to re-publish an old release or for immutable registries.
+        type: boolean
+        default: true
+      refuse-existing:
+        description: Release mode - fail when X.Y.Z is already in the registry instead of overwriting it.
+        type: boolean
+        default: true
+      smoke-command:
+        description: Bash run against SMOKE_IMAGE. Required; an image without a smoke test is never pushed.
+        type: string
+        required: true
+      smoke-tools-path:
+        description: Caller path checked out at github.sha into SMOKE_TOOLS.
+        type: string
+        default: scripts/ci
+      context:
+        type: string
+        default: .
+      runs-on:
+        type: string
+        default: ubuntu-latest
+      sha-keep:
+        description: Branch mode on GHCR - keep this many newest versions tagged only sha-*; 0 keeps all.
+        type: number
+        default: 10
+      dry-run:
+        description: Build and smoke-test only; no login, no push.
+        type: boolean
+        default: false
+    secrets:
+      registry-username:
+        description: Registry user when it is a secret (private registry robot account). Overrides the input.
+        required: false
+      registry-password:
+        description: Registry password or token. Empty falls back to github.token (GHCR).
+        required: false
+    outputs:
+      tags:
+        description: Image tags pushed (newline-separated, full names), or that a dry run would push.
+        value: ${{ jobs.image.outputs.tags }}
+      digest:
+        description: Pushed image digest. Empty on a dry run.
+        value: ${{ jobs.image.outputs.digest }}
+
+jobs:
+  image:
+    name: Build, smoke test, push
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 45
+    # One push per release or branch at a time: an older run must not push last.
+    concurrency:
+      group: image-${{ github.repository }}-${{ inputs.image }}-${{ inputs.mode }}-${{ inputs.version || inputs.branch }}
+      cancel-in-progress: false
+    outputs:
+      tags: ${{ steps.tags.outputs.tags }}
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      SMOKE_TOOLS: ${{ github.workspace }}/.smoke-tools
+    steps:
+      - name: Name the smoke container and image
+        run: |
+          id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(cut -c1-8 /proc/sys/kernel/random/uuid)"
+          echo "SMOKE_NAME=smoke-$id" >> "$GITHUB_ENV"
+          echo "SMOKE_IMAGE=image-smoke:$id" >> "$GITHUB_ENV"
+
+      - name: Compute tags
+        id: tags
+        env:
+          IMAGE: ${{ inputs.image }}
+          MODE: ${{ inputs.mode }}
+          VERSION: ${{ inputs.version }}
+          BRANCH: ${{ inputs.branch }}
+          REF: ${{ inputs.ref }}
+          FLOATING: ${{ inputs.floating }}
+        run: |
+          set -euo pipefail
+          tags=()
+          case "$MODE" in
+            release)
+              if [[ ! "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+                echo "::error::version '$VERSION' is not X.Y.Z[-pre] (no leading v)"
+                exit 1
+              fi
+              major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" pre="${BASH_REMATCH[4]}"
+              tags+=("$VERSION")
+              # A prerelease never moves a floating tag, whatever `floating` says.
+              if [ -z "$pre" ] && [ "$FLOATING" = "true" ]; then
+                tags+=("$major.$minor" "$major" latest)
+              fi
+              ;;
+            branch)
+              if [[ ! "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+                echo "::error::branch '$BRANCH' is empty or not a valid image tag"
+                exit 1
+              fi
+              if [ "$BRANCH" = "latest" ]; then
+                echo "::error::branch 'latest' would overwrite a release tag"
+                exit 1
+              fi
+              if [[ ! "$REF" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::branch mode needs ref to be a full commit SHA (github.sha), got '$REF'"
+                exit 1
+              fi
+              tags+=("$BRANCH" "sha-${REF:0:7}")
+              ;;
+            *)
+              echo "::error::mode must be 'release' or 'branch', got '$MODE'"
+              exit 1
+              ;;
+          esac
+          {
+            echo "tags<<EOF"
+            for t in "${tags[@]}"; do echo "$IMAGE:$t"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          for t in "${tags[@]}"; do echo "- \`$IMAGE:$t\`"; done >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the image for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          push: false
+          load: true
+          tags: ${{ env.SMOKE_IMAGE }}
+          cache-from: type=gha
+          cache-to: ${{ !inputs.dry-run && 'type=gha,mode=max' || '' }}
+
+      # After the build, so the tools never land in the build context.
+      - name: Check out the smoke-test tools (caller's github.sha)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .smoke-tools
+          sparse-checkout: ${{ inputs.smoke-tools-path }}
+          persist-credentials: false
+
+      - name: Smoke test
+        shell: bash
+        env:
+          SMOKE_COMMAND: ${{ inputs.smoke-command }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SMOKE_COMMAND//[[:space:]]/}" ]; then
+            echo "::error::smoke-command is empty"
+            exit 1
+          fi
+          bash -euo pipefail -c "$SMOKE_COMMAND"
+        timeout-minutes: 5
+
+      - name: Smoke test logs and cleanup
+        if: always()
+        run: |
+          docker logs --tail 50 "$SMOKE_NAME" 2>&1 || true
+          docker rm -f "$SMOKE_NAME" >/dev/null 2>&1 || true
+          docker image rm "$SMOKE_IMAGE" >/dev/null 2>&1 || true
+          rm -rf "$SMOKE_TOOLS"
+
+      - name: Registry host
+        id: registry
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          IMAGE: ${{ inputs.image }}
+        run: echo "host=${REGISTRY:-${IMAGE%%/*}}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to the registry
+        if: ${{ !inputs.dry-run }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ steps.registry.outputs.host }}
+          username: ${{ secrets.registry-username || inputs.registry-username }}
+          password: ${{ secrets.registry-password || github.token }}
+
+      - name: Refuse a version that is already published
+        if: ${{ !inputs.dry-run && inputs.mode == 'release' && inputs.refuse-existing }}
+        env:
+          IMAGE: ${{ inputs.image }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if docker manifest inspect "$IMAGE:$VERSION" > /dev/null 2>&1; then
+            echo "::error::$IMAGE:$VERSION is already published. Tag a new version instead."
+            exit 1
+          fi
+
+      - name: Build and push
+        id: push
+        if: ${{ !inputs.dry-run }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          # One manifest per push, no attestation children: a pruned sha- version leaves nothing orphaned.
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version || inputs.branch }}
+
+      # Every main push adds a sha- tag. A version carrying any other tag (main, latest, X.Y.Z...) is never touched.
+      - name: Prune old sha- versions (GHCR)
+        if: ${{ !inputs.dry-run && inputs.mode == 'branch' && steps.registry.outputs.host == 'ghcr.io' && inputs.sha-keep > 0 }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ inputs.image }}
+          KEEP: ${{ inputs.sha-keep }}
+        run: |
+          set -euo pipefail
+          path="${IMAGE#ghcr.io/}"
+          owner="${path%%/*}" name="${path#*/}"
+          api="/orgs/$owner/packages/container/${name//\//%2F}/versions"
+          gh api --paginate "$api?per_page=100" \
+            -q '.[] | select((.metadata.container.tags | length) > 0
+                  and all(.metadata.container.tags[]; startswith("sha-")))
+                | [.created_at, (.id | tostring), (.metadata.container.tags | join(","))] | @tsv' \
+            | sort -r > versions.tsv
+          {
+            echo "| sha-only versions | kept | deleted |"
+            echo "|---|---|---|"
+            echo "| $(wc -l < versions.tsv) | $(head -n "$KEEP" versions.tsv | wc -l) | $(tail -n +"$((KEEP + 1))" versions.tsv | wc -l) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          tail -n +"$((KEEP + 1))" versions.tsv | while IFS=$'\t' read -r created id tags; do
+            gh api -X DELETE "$api/$id" >/dev/null
+            echo "deleted $tags ($created)"
+          done
+          rm -f versions.tsv

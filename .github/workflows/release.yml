@@ -1,0 +1,203 @@
+# A tag vX.Y.Z releases that version: the tag must match package.json, CI must pass, then the image is built,
+# smoke-tested and pushed to GHCR (X.Y.Z, X.Y, X, latest), optionally mirrored to a second registry (X.Y.Z only),
+# and a GitHub Release is created with the CHANGELOG section for the version.
+#
+# Mirror (optional): set the repository variable RELEASE_MIRROR_IMAGE to the full image name without tag
+# (e.g. registry.example.com/project/invoiceninja-mcp) and the secrets RELEASE_MIRROR_USERNAME and
+# RELEASE_MIRROR_PASSWORD. Without the variable the mirror job is skipped.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check the tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: version
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          expected="$(node -p "require('./package.json').version")"
+          if [ "$version" != "$expected" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match package.json version $expected."
+            exit 1
+          fi
+          server="$(sed -n 's/^export const SERVER_VERSION = "\(.*\)";$/\1/p' src/server.ts)"
+          if [ "$version" != "$server" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match SERVER_VERSION $server in src/server.ts."
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section '## [$version]'."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  checks:
+    name: CI
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  # Trusted publishing: npmjs.com → package → Settings → Trusted publisher → GitHub Actions, this repository,
+  # workflow "release.yml". No token is stored; the job's OIDC identity is the credential. The first version of a
+  # package is published by hand (the trusted publisher is configured on an existing package), so a version that is
+  # already on the registry is skipped rather than failed.
+  npm:
+    name: npm
+    needs: [version, checks]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: npm 11.5.1 or newer (trusted publishing)
+        run: npm install -g npm@latest && npm --version
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Publish unless this version is already on npm
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          if npm view "$name@$VERSION" version > /dev/null 2>&1; then
+            echo "::notice::$name@$VERSION is already published; skipping."
+            exit 0
+          fi
+          flags=(--provenance --access public)
+          [ "$PRERELEASE" = "true" ] && flags+=(--tag next)
+          npm publish "${flags[@]}"
+
+  ghcr:
+    name: GHCR
+    needs: [version, checks]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image.yml
+    with:
+      image: ghcr.io/halviclabs/invoiceninja-mcp
+      registry: ghcr.io
+      registry-username: ${{ github.actor }}
+      mode: release
+      ref: ${{ github.ref_name }}
+      version: ${{ needs.version.outputs.version }}
+      smoke-command: |
+        docker run -d --network none --name "$SMOKE_NAME" \
+          -e INVOICE_NINJA_URL=http://127.0.0.1:9 \
+          -e INVOICE_NINJA_TOKEN=ci \
+          -e INVOICE_NINJA_ALLOW_WRITES=true \
+          -e MCP_BEARER_TOKEN=ci-token \
+          "$SMOKE_IMAGE"
+        docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine \
+          node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
+          < "$SMOKE_TOOLS/scripts/ci/mcp-smoke.mjs"
+
+  mirror:
+    name: Mirror registry
+    needs: [version, checks]
+    if: vars.RELEASE_MIRROR_IMAGE != ''
+    uses: ./.github/workflows/image.yml
+    with:
+      image: ${{ vars.RELEASE_MIRROR_IMAGE }}
+      mode: release
+      ref: ${{ github.ref_name }}
+      version: ${{ needs.version.outputs.version }}
+      floating: false
+      smoke-command: |
+        docker run -d --network none --name "$SMOKE_NAME" \
+          -e INVOICE_NINJA_URL=http://127.0.0.1:9 \
+          -e INVOICE_NINJA_TOKEN=ci \
+          -e INVOICE_NINJA_ALLOW_WRITES=true \
+          -e MCP_BEARER_TOKEN=ci-token \
+          "$SMOKE_IMAGE"
+        docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine \
+          node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
+          < "$SMOKE_TOOLS/scripts/ci/mcp-smoke.mjs"
+    secrets:
+      registry-username: ${{ secrets.RELEASE_MIRROR_USERNAME }}
+      registry-password: ${{ secrets.RELEASE_MIRROR_PASSWORD }}
+
+  release:
+    name: GitHub Release
+    needs: [version, npm, ghcr, mirror]
+    # The mirror job may be skipped; a failed one still blocks the release.
+    if: ${{ !cancelled() && needs.npm.result == 'success' && needs.ghcr.result == 'success' && (needs.mirror.result == 'success' || needs.mirror.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          GHCR_TAGS: ${{ needs.ghcr.outputs.tags }}
+          GHCR_DIGEST: ${{ needs.ghcr.outputs.digest }}
+          MIRROR_TAGS: ${{ needs.mirror.outputs.tags }}
+          MIRROR_DIGEST: ${{ needs.mirror.outputs.digest }}
+        run: |
+          set -euo pipefail
+          awk -v v="$VERSION" '
+            /^## \[/ { printing = ($0 ~ "^## \\[" v "\\]") ; next }
+            printing { print }
+          ' CHANGELOG.md | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > notes.md
+          {
+            echo
+            echo "## Packages"
+            echo
+            echo "npm: \`npx -y @halviclabs/invoiceninja-mcp@$VERSION\`"
+            echo
+            echo "GHCR (digest \`$GHCR_DIGEST\`):"
+            echo
+            printf '%s\n' "$GHCR_TAGS" | sed 's/^/- `/; s/$/`/'
+            if [ -n "$MIRROR_TAGS" ]; then
+              echo
+              echo "Mirror (digest \`$MIRROR_DIGEST\`):"
+              echo
+              printf '%s\n' "$MIRROR_TAGS" | sed 's/^/- `/; s/$/`/'
+            fi
+          } >> notes.md
+          cat notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          flags=(--title "v$VERSION" --notes-file notes.md --verify-tag)
+          [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}"
