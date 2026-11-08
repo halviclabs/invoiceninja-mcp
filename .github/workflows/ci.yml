@@ -55,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24]
+        node: [22, 24, 26]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,7 +67,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm test
       - run: npm run build
-      - run: npm audit --audit-level=high
+      - run: npm audit --audit-level=moderate
 
   docker:
     name: Image smoke test
@@ -98,12 +98,12 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --network none --name "$SMOKE_NAME" \
-            -e INVOICE_NINJA_URL=http://127.0.0.1:9 \
+            -e INVOICE_NINJA_URL=https://invoiceninja.invalid \
             -e INVOICE_NINJA_TOKEN=ci \
             -e INVOICE_NINJA_ALLOW_WRITES=true \
             -e MCP_BEARER_TOKEN=ci-token \
             mcp-smoke:ci
-          docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine \
+          docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 \
             node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
             < scripts/ci/mcp-smoke.mjs
         timeout-minutes: 3
@@ -132,11 +132,11 @@ jobs:
       branch: main
       smoke-command: |
         docker run -d --network none --name "$SMOKE_NAME" \
-          -e INVOICE_NINJA_URL=http://127.0.0.1:9 \
+          -e INVOICE_NINJA_URL=https://invoiceninja.invalid \
           -e INVOICE_NINJA_TOKEN=ci \
           -e INVOICE_NINJA_ALLOW_WRITES=true \
           -e MCP_BEARER_TOKEN=ci-token \
           "$SMOKE_IMAGE"
-        docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine \
+        docker run --rm -i --network "container:$SMOKE_NAME" node:24-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 \
           node --input-type=module - http://127.0.0.1:8787/mcp --bearer ci-token --wait 60 \
           < "$SMOKE_TOOLS/scripts/ci/mcp-smoke.mjs"

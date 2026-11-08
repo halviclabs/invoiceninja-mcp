@@ -23,6 +23,8 @@ import {
   type TimeEntry,
 } from "./timelog.js";
 
+import { checkInput, InputError, MAX_COLLECTION, MAX_STRING } from "./security.js";
+
 type Json = Record<string, unknown>;
 
 function ok(payload: unknown) {
@@ -32,8 +34,8 @@ function ok(payload: unknown) {
 function fail(err: unknown) {
   const e =
     err instanceof InvoiceNinjaError
-      ? { error: err.message, status: err.status, details: err.body }
-      : { error: err instanceof Error ? err.message : String(err) };
+      ? { error: err.message, status: err.status, ...(err.details ? { details: err.details } : {}) }
+      : { error: err instanceof InputError ? err.message : "Tool request failed." };
   return { content: [{ type: "text" as const, text: JSON.stringify(e, null, 2) }], isError: true };
 }
 
@@ -83,8 +85,8 @@ function enrichTask(task: Record<string, unknown>): Record<string, unknown> {
 const listShape = {
   per_page: z.number().int().min(1).max(1000).optional().describe("Rows per page (capped server-side, default 20)."),
   page: z.number().int().min(1).optional().describe("Page number for pagination."),
-  filter: z.string().optional().describe("Free-text search across the entity's searchable columns."),
-  sort: z.string().optional().describe("Sort directive, e.g. 'date|desc'."),
+  filter: z.string().max(MAX_STRING).optional().describe("Free-text search across the entity's searchable columns."),
+  sort: z.string().max(MAX_STRING).optional().describe("Sort directive, e.g. 'date|desc'."),
   status: z
     .enum(["active", "archived", "deleted", "all"])
     .optional()
@@ -126,7 +128,15 @@ export function registerTools(server: McpServer, cfg: Config): void {
   const register: McpServer["registerTool"] = ((name: string, def: unknown, handler: unknown) => {
     known.add(name);
     if (disabled.has(name)) return undefined as never;
-    return (server.registerTool as (n: string, d: unknown, h: unknown) => unknown)(name, def, handler) as never;
+    const boundedHandler = async (args: unknown, extra: unknown) => {
+      try {
+        checkInput(args);
+        return await (handler as (a: unknown, e: unknown) => Promise<unknown>)(args, extra);
+      } catch (err) {
+        return fail(err);
+      }
+    };
+    return (server.registerTool as (n: string, d: unknown, h: unknown) => unknown)(name, def, boundedHandler) as never;
   }) as McpServer["registerTool"];
   // Stateless HTTP builds a server per request, so each unknown name is reported once per process.
   queueMicrotask(() => {
@@ -190,8 +200,8 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Get client",
       description: "Fetch a single client by id, including its contacts and (optionally) related records.",
       inputSchema: {
-        id: z.string().describe("Client id (hashed string id, not the display number)."),
-        include: z.string().optional().describe("Relationships to side-load, e.g. 'invoices,documents'."),
+        id: z.string().max(MAX_STRING).describe("Client id (hashed string id, not the display number)."),
+        include: z.string().max(MAX_STRING).optional().describe("Relationships to side-load, e.g. 'invoices,documents'."),
       },
       annotations: RO,
     },
@@ -214,9 +224,9 @@ export function registerTools(server: McpServer, cfg: Config): void {
         "overdue, payable, upcoming, number.",
       inputSchema: {
         ...listShape,
-        client_id: z.string().optional().describe("Restrict to one client."),
-        client_status: z.string().optional().describe("draft, sent, paid, unpaid, or overdue."),
-        number: z.string().optional().describe("Exact invoice number."),
+        client_id: z.string().max(MAX_STRING).optional().describe("Restrict to one client."),
+        client_status: z.string().max(MAX_STRING).optional().describe("draft, sent, paid, unpaid, or overdue."),
+        number: z.string().max(MAX_STRING).optional().describe("Exact invoice number."),
         overdue: z.boolean().optional().describe("Only invoices past their due date with a balance."),
         payable: z.boolean().optional().describe("Only invoices with a remaining balance."),
         upcoming: z.boolean().optional().describe("Only invoices with no/future due date."),
@@ -247,8 +257,8 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Get invoice",
       description: "Fetch a full invoice by id, including line items and the client relationship.",
       inputSchema: {
-        id: z.string().describe("Invoice id."),
-        include: z.string().optional().describe("Defaults to 'client'. e.g. 'client,payments'."),
+        id: z.string().max(MAX_STRING).describe("Invoice id."),
+        include: z.string().max(MAX_STRING).optional().describe("Defaults to 'client'. e.g. 'client,payments'."),
       },
       annotations: RO,
     },
@@ -281,8 +291,8 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Get quote",
       description: "Fetch a full quote by id, including line items and the client relationship.",
       inputSchema: {
-        id: z.string().describe("Quote id."),
-        include: z.string().optional().describe("Defaults to 'client'. e.g. 'client,invoices'."),
+        id: z.string().max(MAX_STRING).describe("Quote id."),
+        include: z.string().max(MAX_STRING).optional().describe("Defaults to 'client'. e.g. 'client,invoices'."),
       },
       annotations: RO,
     },
@@ -301,7 +311,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     {
       title: "List payments",
       description: "List payments with optional search/client filter.",
-      inputSchema: { ...listShape, client_id: z.string().optional() },
+      inputSchema: { ...listShape, client_id: z.string().max(MAX_STRING).optional() },
       annotations: RO,
     },
     async (a) => {
@@ -426,9 +436,9 @@ export function registerTools(server: McpServer, cfg: Config): void {
         "Each row includes decoded tracked time and whether it is currently running.",
       inputSchema: {
         ...listShape,
-        client_id: z.string().optional(),
-        project_id: z.string().optional(),
-        client_status: z.string().optional().describe("'invoiced' or 'uninvoiced' (comma-separable)."),
+        client_id: z.string().max(MAX_STRING).optional(),
+        project_id: z.string().max(MAX_STRING).optional(),
+        client_status: z.string().max(MAX_STRING).optional().describe("'invoiced' or 'uninvoiced' (comma-separable)."),
       },
       annotations: RO,
     },
@@ -450,8 +460,8 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Get task",
       description: "Fetch a single task with full decoded time entries, total tracked time, and running state.",
       inputSchema: {
-        id: z.string(),
-        include: z.string().optional().describe("e.g. 'client,project'."),
+        id: z.string().max(MAX_STRING),
+        include: z.string().max(MAX_STRING).optional().describe("e.g. 'client,project'."),
       },
       annotations: RO,
     },
@@ -469,7 +479,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     {
       title: "List projects",
       description: "List projects (groupings for tasks). Filter by client_id.",
-      inputSchema: { ...listShape, client_id: z.string().optional() },
+      inputSchema: { ...listShape, client_id: z.string().max(MAX_STRING).optional() },
       annotations: RO,
     },
     async (a) => {
@@ -494,10 +504,10 @@ export function registerTools(server: McpServer, cfg: Config): void {
 
   const contactSchema = z
     .object({
-      first_name: z.string().optional(),
-      last_name: z.string().optional(),
-      email: z.string().optional(),
-      phone: z.string().optional(),
+      first_name: z.string().max(MAX_STRING).optional(),
+      last_name: z.string().max(MAX_STRING).optional(),
+      email: z.string().max(MAX_STRING).optional(),
+      phone: z.string().max(MAX_STRING).optional(),
     })
     .passthrough();
 
@@ -508,12 +518,12 @@ export function registerTools(server: McpServer, cfg: Config): void {
       description:
         "Create a client. Contacts must be supplied with the client — email lives on the contact, not the client.",
       inputSchema: {
-        name: z.string().describe("Company / client display name."),
-        contacts: z.array(contactSchema).optional().describe("At least one contact recommended."),
-        vat_number: z.string().optional(),
-        id_number: z.string().optional(),
-        website: z.string().optional(),
-        private_notes: z.string().optional(),
+        name: z.string().max(MAX_STRING).describe("Company / client display name."),
+        contacts: z.array(contactSchema).max(MAX_COLLECTION).optional().describe("At least one contact recommended."),
+        vat_number: z.string().max(MAX_STRING).optional(),
+        id_number: z.string().max(MAX_STRING).optional(),
+        website: z.string().max(MAX_STRING).optional(),
+        private_notes: z.string().max(MAX_STRING).optional(),
       },
       annotations: WRITE,
     },
@@ -535,17 +545,17 @@ export function registerTools(server: McpServer, cfg: Config): void {
         "Invoice Ninja replaces contacts wholesale on every update. Client settings (e.g. currency) are " +
         "preserved automatically; pass currency_id only to change it.",
       inputSchema: {
-        id: z.string(),
-        name: z.string().optional(),
-        contacts: z.array(contactSchema.extend({ id: z.string().optional() })).optional(),
-        vat_number: z.string().optional(),
-        private_notes: z.string().optional(),
-        address1: z.string().optional(),
-        address2: z.string().optional(),
-        city: z.string().optional(),
-        state: z.string().optional(),
-        postal_code: z.string().optional(),
-        country_id: z.string().optional().describe("Numeric country id as string, e.g. '756' for Switzerland."),
+        id: z.string().max(MAX_STRING),
+        name: z.string().max(MAX_STRING).optional(),
+        contacts: z.array(contactSchema.extend({ id: z.string().max(MAX_STRING).optional() })).max(MAX_COLLECTION).optional(),
+        vat_number: z.string().max(MAX_STRING).optional(),
+        private_notes: z.string().max(MAX_STRING).optional(),
+        address1: z.string().max(MAX_STRING).optional(),
+        address2: z.string().max(MAX_STRING).optional(),
+        city: z.string().max(MAX_STRING).optional(),
+        state: z.string().max(MAX_STRING).optional(),
+        postal_code: z.string().max(MAX_STRING).optional(),
+        country_id: z.string().max(MAX_STRING).optional().describe("Numeric country id as string, e.g. '756' for Switzerland."),
         group_settings_id: z
           .string()
           .optional()
@@ -583,11 +593,11 @@ export function registerTools(server: McpServer, cfg: Config): void {
 
   const lineItemSchema = z
     .object({
-      product_key: z.string().optional().describe("Catalogue key or free text label."),
-      notes: z.string().optional().describe("Line description."),
+      product_key: z.string().max(MAX_STRING).optional().describe("Catalogue key or free text label."),
+      notes: z.string().max(MAX_STRING).optional().describe("Line description."),
       cost: z.number().describe("Unit price."),
       quantity: z.number().default(1),
-      tax_name1: z.string().optional(),
+      tax_name1: z.string().max(MAX_STRING).optional(),
       tax_rate1: z.number().optional(),
     })
     .passthrough();
@@ -598,15 +608,15 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Create invoice",
       description: "Create an invoice for a client. Requires client_id and at least one line item.",
       inputSchema: {
-        client_id: z.string().describe("Target client id."),
-        line_items: z.array(lineItemSchema).min(1).describe("Invoice line items."),
-        date: z.string().optional().describe("Y-m-d invoice date."),
-        due_date: z.string().optional().describe("Y-m-d due date."),
-        po_number: z.string().optional(),
-        public_notes: z.string().optional().describe("Visible to the client."),
-        private_notes: z.string().optional().describe("Internal only."),
-        terms: z.string().optional(),
-        footer: z.string().optional(),
+        client_id: z.string().max(MAX_STRING).describe("Target client id."),
+        line_items: z.array(lineItemSchema).max(MAX_COLLECTION).min(1).describe("Invoice line items."),
+        date: z.string().max(MAX_STRING).optional().describe("Y-m-d invoice date."),
+        due_date: z.string().max(MAX_STRING).optional().describe("Y-m-d due date."),
+        po_number: z.string().max(MAX_STRING).optional(),
+        public_notes: z.string().max(MAX_STRING).optional().describe("Visible to the client."),
+        private_notes: z.string().max(MAX_STRING).optional().describe("Internal only."),
+        terms: z.string().max(MAX_STRING).optional(),
+        footer: z.string().max(MAX_STRING).optional(),
         discount: z.number().optional(),
         currency_id: z
           .string()
@@ -634,16 +644,16 @@ export function registerTools(server: McpServer, cfg: Config): void {
         "values — unlike clients/contacts, a sparse invoice update does not wipe anything. Supplying line_items " +
         "replaces the whole array. Deleted invoices must be restored before editing.",
       inputSchema: {
-        id: z.string().describe("Invoice id (hashed string id, not the display number)."),
-        client_id: z.string().optional(),
-        line_items: z.array(lineItemSchema).min(1).optional().describe("Replaces ALL line items when provided."),
-        date: z.string().optional().describe("Y-m-d invoice date."),
-        due_date: z.string().optional().describe("Y-m-d due date."),
-        po_number: z.string().optional(),
-        public_notes: z.string().optional().describe("Visible to the client."),
-        private_notes: z.string().optional().describe("Internal only."),
-        terms: z.string().optional(),
-        footer: z.string().optional(),
+        id: z.string().max(MAX_STRING).describe("Invoice id (hashed string id, not the display number)."),
+        client_id: z.string().max(MAX_STRING).optional(),
+        line_items: z.array(lineItemSchema).max(MAX_COLLECTION).min(1).optional().describe("Replaces ALL line items when provided."),
+        date: z.string().max(MAX_STRING).optional().describe("Y-m-d invoice date."),
+        due_date: z.string().max(MAX_STRING).optional().describe("Y-m-d due date."),
+        po_number: z.string().max(MAX_STRING).optional(),
+        public_notes: z.string().max(MAX_STRING).optional().describe("Visible to the client."),
+        private_notes: z.string().max(MAX_STRING).optional().describe("Internal only."),
+        terms: z.string().max(MAX_STRING).optional(),
+        footer: z.string().max(MAX_STRING).optional(),
         discount: z.number().optional(),
         currency_id: z
           .string()
@@ -675,9 +685,15 @@ export function registerTools(server: McpServer, cfg: Config): void {
         entity: z
           .enum(["invoices", "quotes", "clients", "tasks", "projects", "expenses", "payments", "products"])
           .describe("Entity collection the record belongs to."),
-        id: z.string().describe("Record id (hashed string id)."),
-        file_path: z.string().describe("Absolute path of the file to attach."),
-        file_name: z.string().optional().describe("Name to store the document under (default: basename)."),
+        id: z.string().max(MAX_STRING).describe("Record id (hashed string id)."),
+        file_path: z
+          .string()
+          .max(MAX_STRING)
+          .describe(
+            `Path of the file to attach, inside the upload staging directory ${cfg.uploadDir} ` +
+              "(INVOICE_NINJA_UPLOAD_DIR); a relative path is resolved against it. Files elsewhere are refused.",
+          ),
+        file_name: z.string().max(MAX_STRING).optional().describe("Name to store the document under (default: basename)."),
       },
       annotations: WRITE,
     },
@@ -702,7 +718,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
       description:
         "Apply a lifecycle action to an invoice: mark_sent, mark_paid, archive, restore, delete, cancel, email.",
       inputSchema: {
-        id: z.string(),
+        id: z.string().max(MAX_STRING),
         action: z.enum(["mark_sent", "mark_paid", "archive", "restore", "delete", "cancel", "email"]),
       },
       annotations: DESTRUCTIVE,
@@ -728,7 +744,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
       description:
         "Apply a lifecycle action to a quote: mark_sent, approve, convert (to invoice), archive, restore, delete, email.",
       inputSchema: {
-        id: z.string(),
+        id: z.string().max(MAX_STRING),
         action: z.enum(["mark_sent", "approve", "convert", "archive", "restore", "delete", "email"]),
       },
       annotations: DESTRUCTIVE,
@@ -753,14 +769,14 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Record payment",
       description: "Record a payment, optionally applied to one or more invoices.",
       inputSchema: {
-        client_id: z.string(),
+        client_id: z.string().max(MAX_STRING),
         amount: z.number(),
-        date: z.string().optional().describe("Y-m-d payment date."),
+        date: z.string().max(MAX_STRING).optional().describe("Y-m-d payment date."),
         invoices: z
-          .array(z.object({ invoice_id: z.string(), amount: z.number() }))
+          .array(z.object({ invoice_id: z.string().max(MAX_STRING), amount: z.number() })).max(MAX_COLLECTION)
           .optional()
           .describe("Allocations to specific invoices."),
-        transaction_reference: z.string().optional(),
+        transaction_reference: z.string().max(MAX_STRING).optional(),
       },
       annotations: WRITE,
     },
@@ -779,11 +795,11 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Create quote",
       description: "Create a quote for a client. Requires client_id and at least one line item.",
       inputSchema: {
-        client_id: z.string(),
-        line_items: z.array(lineItemSchema).min(1),
-        date: z.string().optional(),
-        valid_until: z.string().optional(),
-        public_notes: z.string().optional(),
+        client_id: z.string().max(MAX_STRING),
+        line_items: z.array(lineItemSchema).max(MAX_COLLECTION).min(1),
+        date: z.string().max(MAX_STRING).optional(),
+        valid_until: z.string().max(MAX_STRING).optional(),
+        public_notes: z.string().max(MAX_STRING).optional(),
       },
       annotations: WRITE,
     },
@@ -802,8 +818,8 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Create product",
       description: "Add a catalogue product.",
       inputSchema: {
-        product_key: z.string(),
-        notes: z.string().optional(),
+        product_key: z.string().max(MAX_STRING),
+        notes: z.string().max(MAX_STRING).optional(),
         price: z.number().optional(),
         cost: z.number().optional(),
       },
@@ -827,17 +843,17 @@ export function registerTools(server: McpServer, cfg: Config): void {
         "common ids: 1=USD, 3=EUR, 17=CHF. Attach the source receipt afterwards with in_upload_document.",
       inputSchema: {
         amount: z.number().describe("Amount in the expense currency."),
-        date: z.string().optional().describe("Y-m-d expense date."),
-        vendor_id: z.string().optional(),
-        client_id: z.string().optional(),
-        project_id: z.string().optional().describe("Assign to a project; the project's client is applied automatically."),
-        category_id: z.string().optional(),
-        currency_id: z.string().optional().describe("Numeric currency id as string; omit for company currency."),
+        date: z.string().max(MAX_STRING).optional().describe("Y-m-d expense date."),
+        vendor_id: z.string().max(MAX_STRING).optional(),
+        client_id: z.string().max(MAX_STRING).optional(),
+        project_id: z.string().max(MAX_STRING).optional().describe("Assign to a project; the project's client is applied automatically."),
+        category_id: z.string().max(MAX_STRING).optional(),
+        currency_id: z.string().max(MAX_STRING).optional().describe("Numeric currency id as string; omit for company currency."),
         exchange_rate: z.number().optional(),
-        transaction_reference: z.string().optional().describe("Provider invoice/receipt number — also used for deduplication."),
+        transaction_reference: z.string().max(MAX_STRING).optional().describe("Provider invoice/receipt number — also used for deduplication."),
         should_be_invoiced: z.boolean().optional().describe("Mark as billable to the assigned client."),
-        public_notes: z.string().optional(),
-        private_notes: z.string().optional(),
+        public_notes: z.string().max(MAX_STRING).optional(),
+        private_notes: z.string().max(MAX_STRING).optional(),
       },
       annotations: WRITE,
     },
@@ -858,18 +874,18 @@ export function registerTools(server: McpServer, cfg: Config): void {
         "Partially update an expense (e.g. assign a project/category). Omitted fields are preserved — including " +
         "currency_id, which Invoice Ninja would otherwise reset to the company currency on every update.",
       inputSchema: {
-        id: z.string().describe("Expense id (hashed string id)."),
+        id: z.string().max(MAX_STRING).describe("Expense id (hashed string id)."),
         amount: z.number().optional(),
-        date: z.string().optional(),
-        vendor_id: z.string().optional(),
-        client_id: z.string().optional(),
-        project_id: z.string().optional().describe("Assign to a project; the project's client is applied automatically."),
-        category_id: z.string().optional(),
-        currency_id: z.string().optional(),
-        transaction_reference: z.string().optional(),
+        date: z.string().max(MAX_STRING).optional(),
+        vendor_id: z.string().max(MAX_STRING).optional(),
+        client_id: z.string().max(MAX_STRING).optional(),
+        project_id: z.string().max(MAX_STRING).optional().describe("Assign to a project; the project's client is applied automatically."),
+        category_id: z.string().max(MAX_STRING).optional(),
+        currency_id: z.string().max(MAX_STRING).optional(),
+        transaction_reference: z.string().max(MAX_STRING).optional(),
         should_be_invoiced: z.boolean().optional().describe("Mark as billable to the assigned client."),
-        public_notes: z.string().optional(),
-        private_notes: z.string().optional(),
+        public_notes: z.string().max(MAX_STRING).optional(),
+        private_notes: z.string().max(MAX_STRING).optional(),
       },
       annotations: WRITE,
     },
@@ -895,10 +911,10 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Create vendor",
       description: "Create a vendor (expense counterparty), e.g. a hosting or domain provider.",
       inputSchema: {
-        name: z.string(),
-        website: z.string().optional(),
-        currency_id: z.string().optional().describe("Vendor's usual billing currency (numeric id as string)."),
-        private_notes: z.string().optional(),
+        name: z.string().max(MAX_STRING),
+        website: z.string().max(MAX_STRING).optional(),
+        currency_id: z.string().max(MAX_STRING).optional().describe("Vendor's usual billing currency (numeric id as string)."),
+        private_notes: z.string().max(MAX_STRING).optional(),
       },
       annotations: WRITE,
     },
@@ -916,7 +932,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     {
       title: "Create expense category",
       description: "Create an expense category (e.g. Hosting, Domains, SaaS-Tools).",
-      inputSchema: { name: z.string(), color: z.string().optional().describe("Hex color, e.g. #3f51b5.") },
+      inputSchema: { name: z.string().max(MAX_STRING), color: z.string().max(MAX_STRING).optional().describe("Hex color, e.g. #3f51b5.") },
       annotations: WRITE,
     },
     async (a) => {
@@ -932,14 +948,14 @@ export function registerTools(server: McpServer, cfg: Config): void {
   const taskEntrySchema = z.object({
     start: z.number().int().describe("Start time, Unix epoch seconds."),
     end: z.number().int().default(0).describe("End time, epoch seconds. 0 = still running."),
-    description: z.string().optional(),
+    description: z.string().max(MAX_STRING).optional(),
   });
 
   const taskEntryPatchSchema = z.object({
     index: z.number().int().min(0).describe("0-based position of the entry in the task's time log."),
     start: z.number().int().optional().describe("New start epoch seconds."),
     end: z.number().int().optional().describe("New end epoch seconds; 0 = still running."),
-    description: z.string().optional().describe("New per-entry description."),
+    description: z.string().max(MAX_STRING).optional().describe("New per-entry description."),
   });
 
   function entriesToTimeLog(rows: { start: number; end: number; description?: string }[]): TimeEntry[] {
@@ -954,11 +970,11 @@ export function registerTools(server: McpServer, cfg: Config): void {
         "Create a time-tracking task. Optionally seed it with time entries. Omit entries and call " +
         "in_start_task to begin a live timer instead.",
       inputSchema: {
-        description: z.string().optional().describe("Becomes the invoice line-item text."),
-        client_id: z.string().optional(),
-        project_id: z.string().optional(),
+        description: z.string().max(MAX_STRING).optional().describe("Becomes the invoice line-item text."),
+        client_id: z.string().max(MAX_STRING).optional(),
+        project_id: z.string().max(MAX_STRING).optional(),
         rate: z.number().optional().describe("Hourly rate override; falls back to project/client/company default."),
-        time_entries: z.array(taskEntrySchema).optional().describe("Pre-logged [start,end] sessions."),
+        time_entries: z.array(taskEntrySchema).max(MAX_COLLECTION).optional().describe("Pre-logged [start,end] sessions."),
       },
       annotations: WRITE,
     },
@@ -990,14 +1006,14 @@ export function registerTools(server: McpServer, cfg: Config): void {
         "place — the rest of each entry (e.g. the billable flag) is kept. Use time_entries to replace the whole " +
         "log, which is how you delete or reorder entries. To append a new entry, use in_log_time instead.",
       inputSchema: {
-        id: z.string().describe("Task id (hashed string id, not the display number)."),
-        description: z.string().optional().describe("Task description; becomes the invoice line-item text."),
-        client_id: z.string().optional(),
-        project_id: z.string().optional(),
+        id: z.string().max(MAX_STRING).describe("Task id (hashed string id, not the display number)."),
+        description: z.string().max(MAX_STRING).optional().describe("Task description; becomes the invoice line-item text."),
+        client_id: z.string().max(MAX_STRING).optional(),
+        project_id: z.string().max(MAX_STRING).optional(),
         rate: z.number().optional().describe("Hourly rate override."),
-        time_entries: z.array(taskEntrySchema).optional().describe("Replaces ALL time entries when provided."),
+        time_entries: z.array(taskEntrySchema).max(MAX_COLLECTION).optional().describe("Replaces ALL time entries when provided."),
         patch_entries: z
-          .array(taskEntryPatchSchema)
+          .array(taskEntryPatchSchema).max(MAX_COLLECTION)
           .optional()
           .describe("In-place edits of existing entries, addressed by 0-based index."),
       },
@@ -1008,7 +1024,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
         const { id, time_entries, patch_entries, ...meta } = a;
         if (time_entries && patch_entries) {
           return fail(
-            new Error("Provide either 'time_entries' (full replacement) or 'patch_entries' (in-place edits), not both."),
+            new InputError("Provide either 'time_entries' (full replacement) or 'patch_entries' (in-place edits), not both."),
           );
         }
         const body: Json = {};
@@ -1025,7 +1041,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
             const entry = entries[p.index];
             if (!entry) {
               return fail(
-                new Error(`No time entry at index ${p.index}; the task has ${entries.length} entr${entries.length === 1 ? "y" : "ies"}.`),
+                new InputError(`No time entry at index ${p.index}; the task has ${entries.length} entr${entries.length === 1 ? "y" : "ies"}.`),
               );
             }
             // Only touch what was asked for; trailing elements (description,
@@ -1037,7 +1053,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
           body.time_log = serializeTimeLog(entries);
         }
         if (Object.keys(body).length === 0) {
-          return fail(new Error("Nothing to update — supply at least one field to change."));
+          return fail(new InputError("Nothing to update — supply at least one field to change."));
         }
         return ok(enrichTask(await putTask(id, body, current)));
       } catch (e) {
@@ -1052,7 +1068,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Start task timer",
       description:
         "Start the clock on a task: appends an open time entry (end=0). No-op with a note if already running.",
-      inputSchema: { id: z.string(), at: z.number().int().optional().describe("Start epoch (default now).") },
+      inputSchema: { id: z.string().max(MAX_STRING), at: z.number().int().optional().describe("Start epoch (default now).") },
       annotations: WRITE,
     },
     async (a) => {
@@ -1076,7 +1092,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     {
       title: "Stop task timer",
       description: "Stop a running task: closes the open time entry with an end timestamp.",
-      inputSchema: { id: z.string(), at: z.number().int().optional().describe("Stop epoch (default now).") },
+      inputSchema: { id: z.string().max(MAX_STRING), at: z.number().int().optional().describe("Stop epoch (default now).") },
       annotations: WRITE,
     },
     async (a) => {
@@ -1103,18 +1119,18 @@ export function registerTools(server: McpServer, cfg: Config): void {
         "Append a completed time entry to a task after the fact (reconcile a past session). " +
         "Provide start and end epochs, or start + duration_minutes.",
       inputSchema: {
-        id: z.string(),
+        id: z.string().max(MAX_STRING),
         start: z.number().int().describe("Start epoch seconds."),
         end: z.number().int().optional().describe("End epoch seconds."),
         duration_minutes: z.number().optional().describe("Used if end omitted."),
-        description: z.string().optional(),
+        description: z.string().max(MAX_STRING).optional(),
       },
       annotations: WRITE,
     },
     async (a) => {
       try {
         const end = a.end ?? (a.duration_minutes ? a.start + Math.round(a.duration_minutes * 60) : undefined);
-        if (end === undefined) return fail(new Error("Provide either 'end' or 'duration_minutes'."));
+        if (end === undefined) return fail(new InputError("Provide either 'end' or 'duration_minutes'."));
         const task = (await client.get<Json>("tasks", a.id)).data;
         const entries = parseTimeLog(task.time_log);
         entries.push(a.description ? [a.start, end, a.description] : [a.start, end]);
@@ -1134,7 +1150,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
         ? "Apply an action to a task: archive or restore. (Safe mode: deleting a task and invoicing tracked time are left to Invoice Ninja; use in_create_invoice with task_id lines for a draft.)"
         : "Apply an action to a task: archive, restore, delete, or invoice (creates a draft invoice from the tracked time; the task must belong to a client).",
       inputSchema: {
-        id: z.string(),
+        id: z.string().max(MAX_STRING),
         // Safe mode narrows the schema the model sees; the handler keeps the full type.
         action: (cfg.safeMode ? z.enum(["archive", "restore"]) : z.enum(["archive", "restore", "delete", "invoice"])) as unknown as z.ZodEnum<{
           archive: "archive";
@@ -1150,7 +1166,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
         if (a.action === "invoice") {
           const task = (await client.get<Json>("tasks", a.id)).data;
           if (!task.client_id) {
-            return fail(new Error("Task has no client; assign it to a client before invoicing it."));
+            return fail(new InputError("Task has no client; assign it to a client before invoicing it."));
           }
           const secs = totalSeconds(parseTimeLog(task.time_log));
           const hours = Math.round((secs / 3600) * 100) / 100;
@@ -1186,12 +1202,12 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Create project",
       description: "Create a project to group tasks under a client.",
       inputSchema: {
-        name: z.string(),
-        client_id: z.string(),
+        name: z.string().max(MAX_STRING),
+        client_id: z.string().max(MAX_STRING),
         task_rate: z.number().optional(),
         budgeted_hours: z.number().optional(),
-        due_date: z.string().optional().describe("Y-m-d."),
-        public_notes: z.string().optional(),
+        due_date: z.string().max(MAX_STRING).optional().describe("Y-m-d."),
+        public_notes: z.string().max(MAX_STRING).optional(),
       },
       annotations: WRITE,
     },

@@ -56,7 +56,7 @@ test("HTTP credential isolation and local-file boundaries", async (t) => {
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ data: req.url?.includes("/upload") ? { documents: [] } : [] }));
   });
-  const env = { INVOICE_NINJA_URL: legitimateUrl, INVOICE_NINJA_TOKEN: ENV_TOKEN, INVOICE_NINJA_SECRET: ENV_SECRET };
+  const env = { INVOICE_NINJA_URL: legitimateUrl, INVOICE_NINJA_TOKEN: ENV_TOKEN, INVOICE_NINJA_SECRET: ENV_SECRET, INVOICE_NINJA_ALLOW_HTTP: "true", INVOICE_NINJA_ALLOWED_URLS: selectedUrl };
   const requestHeaders = { "X-Invoice-Ninja-Url": selectedUrl, "X-Invoice-Ninja-Token": "request-token" };
   async function endpoint(extra: NodeJS.ProcessEnv = {}, bearer: string | undefined = BEARER) {
     return listen(createHandler({ bearer, env: { ...env, ...extra } }));
@@ -134,7 +134,7 @@ test("HTTP credential isolation and local-file boundaries", async (t) => {
   });
 
   await t.test("local stdio configuration retains working uploads", async () => {
-    const server = createServer({}, { ...env, INVOICE_NINJA_URL: selectedUrl, INVOICE_NINJA_ALLOW_WRITES: "true", INVOICE_NINJA_SAFE_MODE: "true" });
+    const server = createServer({}, { ...env, INVOICE_NINJA_URL: selectedUrl, INVOICE_NINJA_ALLOW_WRITES: "true", INVOICE_NINJA_SAFE_MODE: "true", INVOICE_NINJA_UPLOAD_DIR: dir });
     const client = new Client({ name: "security-test", version: "1" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     try {

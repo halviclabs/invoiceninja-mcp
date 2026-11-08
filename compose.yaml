@@ -1,0 +1,18 @@
+services:
+  invoiceninja-mcp:
+    build: .
+    ports:
+      - "127.0.0.1:8787:8787"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1
+    environment:
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?Set MCP_BEARER_TOKEN}
+      INVOICE_NINJA_URL: ${INVOICE_NINJA_URL:?Set INVOICE_NINJA_URL}
+      INVOICE_NINJA_TOKEN: ${INVOICE_NINJA_TOKEN:?Set INVOICE_NINJA_TOKEN}
+      INVOICE_NINJA_ALLOW_WRITES: "false"
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-127.0.0.1,localhost}

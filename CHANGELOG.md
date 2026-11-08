@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 A tag `vX.Y.Z` releases the matching section through `.github/workflows/release.yml`.
 
+## [0.4.0] - Unreleased
+
+Hardening release. The HTTP transport's configuration changes; read "Migrating from 0.3.x" before updating a
+remote deployment. Stdio users need `INVOICE_NINJA_UPLOAD_DIR` only if they attach documents.
+
+### Migrating from 0.3.x
+
+- HTTP always requires `MCP_BEARER_TOKEN`. There is no unauthenticated HTTP mode.
+- Add your proxy's public hostname to `MCP_ALLOWED_HOSTS`; loopback names are allowed by default. Browser requests
+  that send `Origin` also require an exact `MCP_ALLOWED_ORIGINS` entry.
+- Request-credentials mode requires `INVOICE_NINJA_ALLOWED_URLS`, a comma-separated list of exact, operator-approved
+  base URLs (scheme, port and base path included; no wildcards). Every request still needs both credential headers;
+  environment secrets are never mixed in.
+- Upstream URLs must use HTTPS. A trusted local or private HTTP instance requires explicit
+  `INVOICE_NINJA_ALLOW_HTTP=true`. Redirects are refused: configure the final canonical base URL.
+- Local stdio uploads require `INVOICE_NINJA_UPLOAD_DIR`. Copy intended documents into a dedicated staging
+  directory; uploads outside it, symlink escapes, special files and oversized files (`INVOICE_NINJA_MAX_UPLOAD_BYTES`,
+  default 10 MiB) are refused. Without the variable the tool is not registered. HTTP uploads remain unavailable.
+- JSON-RPC batching is no longer supported. Send one message per request.
+- Supported Node runtimes are 22, 24 and 26 (`engines`); the image uses Node 24.
+
+### Security
+
+- Destination allowlist (`INVOICE_NINJA_ALLOWED_URLS`) for request credentials, HTTPS-only upstreams with an explicit
+  opt-in for HTTP, and no redirect following, so a bearer holder cannot steer the server at arbitrary hosts.
+- Record IDs are validated (`[A-Za-z0-9_-]{1,128}`) and URL-encoded as single path segments; a tool input cannot
+  select a different API path.
+- Bounded inputs (string length, collection size, nesting depth, total elements), request body size, response size
+  and duration, plus per-process rate and concurrency limits on HTTP.
+- Host and Origin checks (`MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`); duplicate credential headers are refused.
+- Errors return fixed, bounded messages; upstream bodies, filesystem errors and credentials are never echoed.
+- Container: `compose.yaml` with read-only root filesystem, dropped capabilities, no privilege escalation and
+  memory/CPU/pid caps; the Node base image is pinned by digest. The image build runs the type check and tests.
+
+### Changed
+
+- Invoice Ninja error responses pass their `message` and per-field `errors` to the model (strings only, bounded in
+  number and length), so a 422 says which field was rejected; nothing else from an upstream body is returned.
+- `/healthz` answers before the Host and Origin policy, so probes arriving with a pod IP or service name as Host
+  succeed. In request-credentials mode the rate limit applies per request token instead of per process.
+- JSON-RPC errors keep their code and message (bounded to 512 characters); an empty numeric environment variable
+  means "unset" instead of failing startup; a configuration error at HTTP start prints one line and exits 1.
+
+### Added
+
+- `src/security.ts` (input bounds, path-segment validation) and `test/hardening.test.ts` covering each item above.
+- `tsconfig.test.json`: tests are type-checked by `npm run typecheck`.
+
 ## [0.3.1] - 2026-11-08
 
 Security release. Users of 0.3.0 who run the HTTP transport should update.
@@ -71,6 +119,7 @@ Both reported by Romain Valtier, [TETRA](https://tetra-ai.com). Thank you.
 - Safe mode (`INVOICE_NINJA_SAFE_MODE`) and the tool deny list (`INVOICE_NINJA_DISABLED_TOOLS`).
 - Container image published to a private registry from a version tag.
 
+[0.4.0]: https://github.com/halviclabs/invoiceninja-mcp/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/halviclabs/invoiceninja-mcp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/halviclabs/invoiceninja-mcp/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/halviclabs/invoiceninja-mcp/compare/v0.2.0...v0.2.1

@@ -28,9 +28,12 @@ export interface Config {
   timeoutMs: number;
   /** Hard cap on per_page to avoid dumping huge payloads into the model context. */
   maxPerPage: number;
+  maxResponseBytes: number;
+  uploadDir?: string;
+  maxUploadBytes: number;
 }
 
-function bool(value: string | undefined, fallback: boolean): boolean {
+export function bool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
@@ -48,7 +51,7 @@ export interface ConfigOverrides {
 /** A configuration the server cannot run with: missing credentials or an address it refuses. */
 export class ConfigError extends Error {
   constructor(
-    readonly code: "missing_credentials" | "invalid_url" | "invalid_header",
+    readonly code: "missing_credentials" | "invalid_url" | "invalid_header" | "invalid_config",
     message: string,
   ) {
     super(message);
@@ -61,14 +64,11 @@ export function normalizeBaseUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, "").replace(/\/api\/v1$/, "").replace(/\/+$/, "");
 }
 
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
-
 /**
- * An address sent with a request: https, or http on a loopback host (development and tests), without a user name or
- * password. Returns the normalised base URL; throws ConfigError("invalid_url") otherwise. Which hosts the server may
- * reach is the network's decision (ALVIREQ's chart allows public addresses and the instance's private ranges only).
+ * Validate an operator-approved base URL. HTTPS is the default; HTTP requires an explicit opt-in.
+ * Request-selected destinations must additionally match the exact base-URL allowlist in loadConfig.
  */
-export function checkRequestUrl(raw: string): string {
+export function checkRequestUrl(raw: string, allowHttp = false): string {
   let url: URL;
   try {
     url = new URL(raw.trim());
@@ -76,10 +76,37 @@ export function checkRequestUrl(raw: string): string {
     throw new ConfigError("invalid_url", "The Invoice Ninja address is not a valid URL.");
   }
   if (url.username || url.password) throw new ConfigError("invalid_url", "The Invoice Ninja address must not contain a user name or password.");
-  const httpsOrLoopback = url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname));
-  if (!httpsOrLoopback) throw new ConfigError("invalid_url", "The Invoice Ninja address must start with https://.");
+  if (url.protocol !== "https:" && !(allowHttp && url.protocol === "http:")) {
+    throw new ConfigError("invalid_url", "The Invoice Ninja address must use HTTPS (HTTP requires INVOICE_NINJA_ALLOW_HTTP=true).");
+  }
   if (url.search || url.hash) throw new ConfigError("invalid_url", "The Invoice Ninja address must not contain a query or fragment.");
   return normalizeBaseUrl(`${url.origin}${url.pathname}`);
+}
+
+export function integer(env: NodeJS.ProcessEnv, name: string, fallback: number, max: number): number {
+  // An empty value (a chart or compose template rendering an unset variable) means "not set".
+  const raw = env[name]?.trim();
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1 || value > max) {
+    throw new ConfigError("invalid_config", `${name} must be a positive integer no greater than ${max}.`);
+  }
+  return value;
+}
+
+// loadConfig runs per HTTP request; the allowlist is parsed once per distinct environment value.
+const allowedUrlsCache = new Map<string, Set<string>>();
+
+export function allowedRequestUrls(env: NodeJS.ProcessEnv): Set<string> {
+  const key = `${env.INVOICE_NINJA_ALLOWED_URLS ?? ""}\n${env.INVOICE_NINJA_ALLOW_HTTP ?? ""}`;
+  const cached = allowedUrlsCache.get(key);
+  if (cached) return cached;
+  const allowHttp = bool(env.INVOICE_NINJA_ALLOW_HTTP, false);
+  const urls = new Set((env.INVOICE_NINJA_ALLOWED_URLS ?? "").split(",").map(s => s.trim()).filter(Boolean).map(s => checkRequestUrl(s, allowHttp)));
+  if (!urls.size) throw new ConfigError("invalid_config", "Request credentials require INVOICE_NINJA_ALLOWED_URLS (exact trusted base URLs).");
+  if (allowedUrlsCache.size >= 16) allowedUrlsCache.clear();
+  allowedUrlsCache.set(key, urls);
+  return urls;
 }
 
 /**
@@ -119,8 +146,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Conf
   }
 
   const envSafeMode = bool(env.INVOICE_NINJA_SAFE_MODE, false);
+  const baseUrl = checkRequestUrl(rawUrl, bool(env.INVOICE_NINJA_ALLOW_HTTP, false));
+  if (requestCredentials && !allowedRequestUrls(env).has(baseUrl)) {
+    throw new ConfigError("invalid_url", "The Invoice Ninja address is not allowed by this server.");
+  }
+  if (token.length > 4096 || /[\r\n]/.test(token)) throw new ConfigError("invalid_config", "The Invoice Ninja token is malformed.");
   return {
-    baseUrl: requestCredentials ? checkRequestUrl(rawUrl) : normalizeBaseUrl(rawUrl),
+    baseUrl,
     token,
     secret: requestCredentials ? undefined : env.INVOICE_NINJA_SECRET?.trim() || undefined,
     allowWrites: bool(env.INVOICE_NINJA_ALLOW_WRITES, false),
@@ -131,8 +163,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Conf
         .map((t) => t.trim())
         .filter(Boolean),
     ),
-    timeoutMs: Number(env.INVOICE_NINJA_TIMEOUT_MS ?? 30_000),
-    maxPerPage: Number(env.INVOICE_NINJA_MAX_PER_PAGE ?? 100),
+    timeoutMs: integer(env, "INVOICE_NINJA_TIMEOUT_MS", 30_000, 120_000),
+    maxPerPage: integer(env, "INVOICE_NINJA_MAX_PER_PAGE", 100, 1_000),
+    maxResponseBytes: integer(env, "INVOICE_NINJA_MAX_RESPONSE_BYTES", 2_097_152, 16_777_216),
+    uploadDir: env.INVOICE_NINJA_UPLOAD_DIR?.trim() || undefined,
+    maxUploadBytes: integer(env, "INVOICE_NINJA_MAX_UPLOAD_BYTES", 10_485_760, 20_971_520),
   };
 }
 
